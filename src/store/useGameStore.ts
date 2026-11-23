@@ -3700,12 +3700,15 @@ export const useGameStore = create<GameState>((set, get) => ({
       }
 
       // Merge AI docket issues with fallback, and promote evaluated Sponsored Bills to the top!
-      const mergedBaseDocket = latestState.monthlyDocket.map((existing) => {
-        const aiMatch = aiDocketIssues.find(
-          (a) => a.pillar === existing.pillar
-        );
-        return aiMatch ?? existing;
-      });
+      const mergedBaseDocket =
+        aiDocketIssues.length >= 3
+          ? aiDocketIssues
+          : latestState.monthlyDocket.map((existing) => {
+              const aiMatch = aiDocketIssues.find(
+                (a) => a.pillar === existing.pillar
+              );
+              return aiMatch ?? existing;
+            });
 
       const promotedSponsoredIssues: MonthlyDocketIssue[] = evaluatedBills.map(
         (bill) => ({

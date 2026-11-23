@@ -868,8 +868,17 @@ function parseAndClampAIDocketPayload(
     // Enforce anti-repetition check against pastIssueTitles
     if (pastLower.has(title.toLowerCase())) continue;
 
-    const rawPresets = Array.isArray(rec.presets) ? rec.presets : [];
-    if (rawPresets.length < 3) continue;
+    const rawPresets = Array.isArray(rec.presets)
+      ? rec.presets
+      : Array.isArray(rec.options)
+      ? rec.options
+      : Array.isArray(rec.choices)
+      ? rec.choices
+      : [];
+    if (rawPresets.length === 0) continue;
+    while (rawPresets.length < 3) {
+      rawPresets.push(rawPresets[rawPresets.length - 1]);
+    }
 
     const clampedPresets = rawPresets.slice(0, 3).map((p, idx): DocketPresetOption => {
       const pr = (p && typeof p === "object" ? p : {}) as Record<string, unknown>;
@@ -1004,7 +1013,7 @@ export async function generateLawAwareMonthlyDocket(
         attempt === 1 ? 0.88 : 0.55,
         1650,
         attempt === 1
-          ? { top_p: 0.92, frequency_penalty: 0.6 }
+          ? { top_p: 0.92, frequency_penalty: 0.15 }
           : { top_p: 0.9 }
       );
       lastRaw = rawJson;
@@ -2472,7 +2481,14 @@ export async function generateBatchedTurnContent(
   const targetTurn = stateSnapshot.time.turn;
   const seedSlots = generateDocketSeeds(stateSnapshot);
   const targetPillars = seedSlots.map((s) => s.pillar);
-  const last8Laws = stateSnapshot.enactedPolicies.slice(0, 8);
+  const lastMonthTurn = Math.max(1, targetTurn - 1);
+  const lastMonthLaws = stateSnapshot.enactedPolicies.filter(
+    (l) => l.enactedTurn >= lastMonthTurn
+  );
+  const earlierLaws = stateSnapshot.enactedPolicies
+    .filter((l) => l.enactedTurn < lastMonthTurn)
+    .slice(0, 6);
+
   const compactKeywords = Array.from(
     new Set([
       ...getCrossGameSeenTopicKeywords(),
@@ -2483,15 +2499,21 @@ export async function generateBatchedTurnContent(
     new Set([...getCrossGameSeenIssueTitles(), ...stateSnapshot.pastIssueTitles])
   ).slice(-25);
 
-  const lawsDigest =
-    last8Laws.length === 0
-      ? "None yet."
-      : last8Laws
-          .map(
-            (l) =>
-              `- "${l.policy_name}" (${l.budget_impact.monthly_change >= 0 ? "+" : ""}$${l.budget_impact.monthly_change}/mo)`
-          )
-          .join("\n");
+  const formatLawLine = (l: (typeof stateSnapshot.enactedPolicies)[number]) => {
+    const isEO = (l.sourceLabel ?? "").toLowerCase().includes("executive order");
+    const tag = isEO ? "UNILATERAL EXECUTIVE ORDER BYPASS" : l.sourceLabel ?? "Enacted Law";
+    return `- [${tag} | Month ${l.enactedTurn}] "${l.policy_name}": ${
+      l.originalPromptText ?? l.vibe_feed_headline
+    } (Fallout: ${l.unintended_consequence_trigger ?? "None"})`;
+  };
+
+  const lastMonthDigest =
+    lastMonthLaws.length === 0
+      ? "None enacted last month (react to active doctrines & older laws)."
+      : lastMonthLaws.map(formatLawLine).join("\n");
+
+  const earlierLawsDigest =
+    earlierLaws.length === 0 ? "None." : earlierLaws.map(formatLawLine).join("\n");
 
   const seedConstraints = seedSlots
     .map((slot, i) =>
@@ -2505,8 +2527,11 @@ export async function generateBatchedTurnContent(
 Doctrines: Fiscal=${stateSnapshot.doctrines.fiscal}, Justice=${stateSnapshot.doctrines.justice}, Urban=${stateSnapshot.doctrines.urban}.
 Mood: ${stateSnapshot.voterSentiment.overallApproval >= 55 ? "Buoyant" : stateSnapshot.voterSentiment.overallApproval < 35 ? "Mutinous" : "Restless"}, Net=${stateSnapshot.treasury.monthlyNet >= 0 ? "Surplus" : "Deficit"}.
 
-LAST 8 ACTIVE LAWS:
-${lawsDigest}
+DECREES & EXECUTIVE ORDERS ENACTED LAST MONTH (MUST BE FEATURED IN FRONT-PAGE FALLOUT):
+${lastMonthDigest}
+
+EARLIER ACTIVE LAWS:
+${earlierLawsDigest}
 
 BANNED KEYWORDS/TITLES (DO NOT REPEAT ON ORIGINAL SLOTS):
 ${JSON.stringify(compactKeywords)} | ${JSON.stringify(blacklistTitles)}
@@ -2515,6 +2540,7 @@ MANDATORY 4-SLOT COMBINATORIAL SEEDS (FOLLOW STRICTLY):
 ${seedConstraints}
 
 RULES:
+- "broadsheet.fallout_paragraphs" MUST directly name and satirize the DECREES & EXECUTIVE ORDERS ENACTED LAST MONTH above (including roasting any Unilateral Executive Order bypasses!).
 - Newspaper prose must NEVER quote raw metric numbers or deltas; write 3 witty NationStates-style satirical paragraphs + 1 deadpan resident quote + rival quotes (The Metro Chronicle vs The Streetlight).
 - For crime/pollution/traffic, negative (-15) helps; for land_value/education/health/approval, positive (+15) helps.
 
@@ -2558,58 +2584,53 @@ Return STRICTLY raw JSON:
   ]
 }`;
 
-  let lastRawOutput = "";
-  for (let attempt = 1; attempt <= 2; attempt++) {
-    try {
-      const promptToSend =
-        attempt === 1
-          ? `Generate Month ${targetTurn} batched broadsheet and 4-issue docket JSON now.`
-          : `REPAIR PASS: Your previous JSON failed parsing. Fix the syntax and return ONLY valid raw JSON matching the schema. Broken output start: ${lastRawOutput.slice(0, 260)}`;
+  let bestBroadsheet: FrontPageBroadsheet = fallbackWithHearings;
+  let broadsheetSucceeded = false;
 
-      const rawJson = await webLLMService.requestRawJsonCompletion(
-        systemPrompt,
-        promptToSend,
-        attempt === 1 ? 0.88 : 0.55,
-        1100,
-        attempt === 1
-          ? { top_p: 0.92, frequency_penalty: 0.6 }
-          : { top_p: 0.9 }
-      );
-      lastRawOutput = rawJson;
+  // Pass 1: Single batched call for Broadsheet + 4 Docket Issues (low frequency_penalty so JSON keys aren't corrupted)
+  try {
+    const rawJson = await webLLMService.requestRawJsonCompletion(
+      systemPrompt,
+      `Generate Month ${targetTurn} batched broadsheet and 4-issue docket JSON now.`,
+      0.85,
+      2200,
+      { top_p: 0.92, frequency_penalty: 0.15 }
+    );
 
-      const extracted = sanitizeAndExtractJsonObject(rawJson);
-      const parsed = JSON.parse(extracted) as Record<string, unknown>;
-      const bObj = (parsed.broadsheet ?? {}) as Record<string, unknown>;
+    const extracted = sanitizeAndExtractJsonObject(rawJson);
+    const parsed = JSON.parse(extracted) as Record<string, unknown>;
+    const bObj = (parsed.broadsheet ?? {}) as Record<string, unknown>;
 
-      const str = (v: unknown, fb: string, maxLen = 400): string =>
-        typeof v === "string" &&
-        v.trim().length > 5 &&
-        v.trim().toLowerCase() !== "string"
-          ? v.trim().slice(0, maxLen)
-          : fb;
+    const str = (v: unknown, fb: string, maxLen = 400): string =>
+      typeof v === "string" &&
+      v.trim().length > 5 &&
+      v.trim().toLowerCase() !== "string"
+        ? v.trim().slice(0, maxLen)
+        : fb;
 
-      const strArr = (v: unknown, fb: string[], minLen = 2): string[] => {
-        if (!Array.isArray(v)) return fb;
-        const cleaned = v
-          .filter((x): x is string => typeof x === "string")
-          .map((x) => x.trim())
-          .filter((x) => x.length > 18 && x.toLowerCase() !== "string")
-          .map((x) => x.slice(0, 480));
-        return cleaned.length >= minLen ? cleaned.slice(0, 4) : fb;
-      };
+    const strArr = (v: unknown, fb: string[], minLen = 2): string[] => {
+      if (!Array.isArray(v)) return fb;
+      const cleaned = v
+        .filter((x): x is string => typeof x === "string")
+        .map((x) => x.trim())
+        .filter((x) => x.length > 18 && x.toLowerCase() !== "string")
+        .map((x) => x.slice(0, 480));
+      return cleaned.length >= minLen ? cleaned.slice(0, 4) : fb;
+    };
 
-      const falloutParagraphs = strArr(
-        bObj.fallout_paragraphs,
-        fallbackWithHearings.falloutParagraphs,
-        2
-      );
-      const crisesParagraphs = strArr(
-        bObj.crises_paragraphs,
-        fallbackWithHearings.crisesParagraphs,
-        2
-      );
+    const falloutParagraphs = strArr(
+      bObj.fallout_paragraphs,
+      fallbackWithHearings.falloutParagraphs,
+      2
+    );
+    const crisesParagraphs = strArr(
+      bObj.crises_paragraphs,
+      fallbackWithHearings.crisesParagraphs,
+      2
+    );
 
-      const broadsheet: FrontPageBroadsheet = {
+    if (typeof bObj.lead_headline === "string" && bObj.lead_headline.trim().length > 5) {
+      bestBroadsheet = {
         ...fallbackWithHearings,
         leadHeadline: str(bObj.lead_headline, fallbackWithHearings.leadHeadline, 110),
         subhead: str(bObj.subhead, fallbackWithHearings.subhead, 200),
@@ -2641,31 +2662,60 @@ Return STRICTLY raw JSON:
         ),
         isAIGenerated: true,
       };
+      broadsheetSucceeded = true;
+    }
 
+    const rawIssues = Array.isArray(parsed.issues)
+      ? parsed.issues
+      : Array.isArray(bObj.issues)
+      ? bObj.issues
+      : null;
+
+    if (rawIssues) {
       const docketIssues = parseAndClampAIDocketPayload(
-        JSON.stringify({ issues: parsed.issues }),
+        JSON.stringify({ issues: rawIssues }),
         targetTurn,
         blacklistTitles
       );
-
       if (docketIssues.length > 0) {
         recordCrossGameIssueTitles(docketIssues.map((i) => i.title));
-        return { broadsheet, docketIssues, usedDocketFallback: false };
+        return {
+          broadsheet: bestBroadsheet,
+          docketIssues,
+          usedDocketFallback: false,
+        };
       }
+    }
+  } catch (err) {
+    console.error("Batched Turn Content Pass 1 Notice:", err);
+  }
 
-      console.error(
-        `Batched Turn Content Attempt ${attempt}/2 produced 0 valid docket issues.`
-      );
+  // Pass 2 (Focused Recovery): If broadsheet didn't succeed, generate broadsheet cleanly;
+  // and generate the 4 docket issues via the dedicated docket-only prompt.
+  if (!broadsheetSucceeded) {
+    try {
+      const generatedBroadsheet = await generateMonthlyBroadsheet(stateSnapshot);
+      bestBroadsheet = {
+        ...generatedBroadsheet,
+        publicHearingsDebate:
+          hearings.length > 0 ? hearings : generatedBroadsheet.publicHearingsDebate,
+      };
     } catch (err) {
-      console.error(
-        `Batched Turn Content Error (Attempt ${attempt}/2):`,
-        err
-      );
+      console.error("Broadsheet Recovery Pass Error:", err);
     }
   }
 
+  const repairedIssues = await generateLawAwareMonthlyDocket(stateSnapshot);
+  if (repairedIssues.length > 0) {
+    return {
+      broadsheet: bestBroadsheet,
+      docketIssues: repairedIssues,
+      usedDocketFallback: false,
+    };
+  }
+
   return {
-    broadsheet: fallbackWithHearings,
+    broadsheet: bestBroadsheet,
     docketIssues: [],
     usedDocketFallback: true,
   };
