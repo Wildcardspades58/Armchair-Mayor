@@ -1,0 +1,24 @@
+{
+  "name": "Armchair Mayor — Civic Governance by Broadsheet & Decree",
+  "short_name": "Armchair Mayor",
+  "description": "Civic Governance by Broadsheet & Decree, powered by local in-browser WebGPU AI.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#FAF5EB",
+  "theme_color": "#C85A32",
+  "orientation": "landscape",
+  "icons": [
+    {
+      "src": "/icon-192.svg",
+      "sizes": "192x192",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/icon-512.svg",
+      "sizes": "512x512",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}
