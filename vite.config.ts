@@ -2,7 +2,7 @@ import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import { VitePWA } from "vite-plugin-pwa";
 
-const REPO_BASE = "/Armchair-mayor/";
+const REPO_BASE = "/Armchair-Mayor/";
 
 export default defineConfig({
   base: REPO_BASE,
