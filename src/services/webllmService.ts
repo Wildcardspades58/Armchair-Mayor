@@ -352,6 +352,26 @@ class WebLLMService {
     if (!content) {
       throw new Error("Empty response from WebLLM engine.");
     }
+
+    // If the model replied conversationally without any '{', perform 1 strict JSON retry
+    if (!content.includes("{")) {
+      const retryResponse = await this.engine.chat.completions.create({
+        messages: [
+          { role: "system", content: systemPrompt },
+          {
+            role: "user",
+            content: `${userPrompt}\n\nCRITICAL: Your response MUST start with '{' and end with '}'. Output ONLY raw JSON, zero prose.`,
+          },
+        ],
+        temperature: 0.25,
+        max_tokens: maxTokens,
+      });
+      const retryContent = retryResponse.choices?.[0]?.message?.content;
+      if (retryContent && retryContent.includes("{")) {
+        return retryContent;
+      }
+    }
+
     return content;
   }
 

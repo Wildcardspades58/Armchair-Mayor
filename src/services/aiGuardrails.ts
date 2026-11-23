@@ -214,8 +214,13 @@ export function sanitizeAndExtractJsonObject(rawOutput: string): string {
     }
   }
 
-  // Strip illegal trailing commas before closing braces/brackets: e.g. `{"a": 1,}` -> `{"a": 1}`
-  return candidate.replace(/,\s*([}\]])/g, "$1");
+  // 1. Strip illegal trailing commas before closing braces/brackets: e.g. `{"a": 1,}` -> `{"a": 1}`
+  candidate = candidate.replace(/,\s*([}\]])/g, "$1");
+  // 2. Strip illegal leading `+` on positive numbers in JSON: e.g. `"change": +10` -> `"change": 10`
+  candidate = candidate.replace(/([:,\[]\s*)\+(\d)/g, "$1$2");
+  // 3. Quote unquoted JS-style object keys right after `{` or `,`: e.g. `{ change: 5 }` -> `{ "change": 5 }`
+  candidate = candidate.replace(/([{,]\s*)([a-zA-Z_][a-zA-Z0-9_]*)\s*:/g, '$1"$2":');
+  return candidate;
 }
 
 // Preserve export alias used by crisisEngine.ts
