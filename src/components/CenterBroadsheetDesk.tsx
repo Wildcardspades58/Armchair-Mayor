@@ -74,6 +74,10 @@ export const CenterBroadsheetDesk: React.FC = () => {
   const sponsorCustomBill = useGameStore((s) => s.sponsorCustomBill);
   const pressWireFlash = useGameStore((s) => s.pressWireFlash);
   const dismissPressWireFlash = useGameStore((s) => s.dismissPressWireFlash);
+  const docketFallbackNotice = useGameStore((s) => s.docketFallbackNotice);
+  const dismissDocketFallbackNotice = useGameStore(
+    (s) => s.dismissDocketFallbackNotice
+  );
 
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const [selectedIssueId, setSelectedIssueId] = useState<string | null>(null);
@@ -268,6 +272,20 @@ export const CenterBroadsheetDesk: React.FC = () => {
 
       {/* 3. Scrollable Tab Content */}
       <div ref={scrollRef} className="gov-broadsheet-scroll">
+        {/* Subtle Toast Warning if WebLLM JSON repair failed and fallback docket was forced */}
+        {docketFallbackNotice && (
+          <div className="gov-compiler-note" style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "8px" }} role="status">
+            <span>⚠ {docketFallbackNotice}</span>
+            <button
+              type="button"
+              className="gov-btn-micro"
+              onClick={dismissDocketFallbackNotice}
+            >
+              DISMISS
+            </button>
+          </div>
+        )}
+
         {/* Immediate Press Wire Flash Card upon Policy Enactment */}
         {pressWireFlash && (
           <div className="gov-press-wire-flash" role="status">

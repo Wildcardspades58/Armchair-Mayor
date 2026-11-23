@@ -730,6 +730,7 @@ export interface GameState {
   pendingSponsoredBills: SponsoredBillProposal[]; // Turn N sponsored bills queued for Turn N+1 vote
   turnTransitionProgress: TurnProcessingState; // Synchronous between-turn AI overlay
   pressWireFlash: PressWireFlash | null; // Immediate satirical Press Wire Flash on policy enactment
+  docketFallbackNotice: string | null; // Subtle toast warning if AI docket parsing failed & fell back
   news_ticker: VibeFeedEntry[]; // Step 4.3: Primary Vibe Feed news_ticker array
   vibeFeed: VibeFeedEntry[]; // Synchronized alias for news_ticker
   isTurnPausedForCrisis: boolean;
@@ -771,6 +772,7 @@ export interface GameState {
   advanceTurn: () => Promise<void> | void;
   sponsorCustomBill: (proposal: SponsoredBillProposal) => boolean;
   dismissPressWireFlash: () => void;
+  dismissDocketFallbackNotice: () => void;
   setShowCityReportModal: (visible: boolean) => void;
   setShowDocketModal: (visible: boolean, focusPillar?: CivicPillar) => void;
   setShowCabinetModal: (visible: boolean) => void;

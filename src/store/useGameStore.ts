@@ -1311,6 +1311,7 @@ const buildProceduralCityState = (
       subLabel: "",
     } as TurnProcessingState,
     pressWireFlash: null as PressWireFlash | null,
+    docketFallbackNotice: null as string | null,
     news_ticker: initialFeed,
     vibeFeed: initialFeed,
     isTurnPausedForCrisis: false,
@@ -2608,6 +2609,10 @@ export const useGameStore = create<GameState>((set, get) => ({
     set({ pressWireFlash: null });
   },
 
+  dismissDocketFallbackNotice: () => {
+    set({ docketFallbackNotice: null });
+  },
+
   /**
    * Toggles the Manual Save / Load & JSON Export/Import Drawer Modal.
    */
@@ -3674,8 +3679,11 @@ export const useGameStore = create<GameState>((set, get) => ({
         },
       });
       const latestState = get();
-      const { broadsheet: broadsheetWithHearings, docketIssues: aiDocketIssues } =
-        await generateBatchedTurnContent(latestState, hearings);
+      const {
+        broadsheet: broadsheetWithHearings,
+        docketIssues: aiDocketIssues,
+        usedDocketFallback,
+      } = await generateBatchedTurnContent(latestState, hearings);
 
       // Step 4 (100%): Finalizing Next Month's Law-Aware Legislative Docket...
       set({
@@ -3728,6 +3736,9 @@ export const useGameStore = create<GameState>((set, get) => ({
         activeDocketPillar:
           promotedSponsoredIssues[0]?.pillar ?? s.activeDocketPillar,
         centerDeskTab: "dispatch",
+        docketFallbackNotice: usedDocketFallback
+          ? "WebLLM returned malformed JSON twice; fallback docket issues were loaded for this month."
+          : null,
         turnTransitionProgress: {
           isOpen: false,
           pct: 100,

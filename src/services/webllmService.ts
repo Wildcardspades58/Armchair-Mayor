@@ -307,7 +307,8 @@ class WebLLMService {
     systemPrompt: string,
     userPrompt: string,
     temperature = 0.2,
-    maxTokens = 1024
+    maxTokens = 1024,
+    samplingOpts?: { top_p?: number; frequency_penalty?: number }
   ): Promise<string> {
     if (!this.engine || !this.status.isReady) {
       const ready = await this.initializeEngine();
@@ -320,14 +321,32 @@ class WebLLMService {
       }
     }
 
-    const response = await this.engine.chat.completions.create({
+    const requestPayload: webllm.ChatCompletionRequestNonStreaming = {
       messages: [
         { role: "system", content: systemPrompt },
         { role: "user", content: userPrompt },
       ],
       temperature,
       max_tokens: maxTokens,
-    });
+      ...(samplingOpts?.top_p !== undefined ? { top_p: samplingOpts.top_p } : {}),
+      ...(samplingOpts?.frequency_penalty !== undefined
+        ? { frequency_penalty: samplingOpts.frequency_penalty }
+        : {}),
+    };
+
+    let response: webllm.ChatCompletion;
+    try {
+      response = await this.engine.chat.completions.create(requestPayload);
+    } catch (err) {
+      if (samplingOpts?.frequency_penalty !== undefined) {
+        // Fallback if a specific WebLLM runtime rejects frequency_penalty
+        const { frequency_penalty: _fp, ...safeRest } = requestPayload;
+        void _fp;
+        response = await this.engine.chat.completions.create(safeRest);
+      } else {
+        throw err;
+      }
+    }
 
     const content = response.choices?.[0]?.message?.content;
     if (!content) {
@@ -549,13 +568,160 @@ function sampleFourPillars(): CivicPillar[] {
   return pool.slice(0, 4);
 }
 
-function sampleRandomCivicDomains(count = 4): string[] {
-  const pool = [...CIVIC_DOMAIN_SEEDS];
-  for (let i = pool.length - 1; i > 0; i--) {
+// ----------------------------------------------------------------------------
+// 3-Wheel Combinatorial Seed Generator (36 Niches x 26 Catalysts x 18 Clashes)
+// ----------------------------------------------------------------------------
+
+export const CIVIC_NICHES = [
+  "Floating barge housing",
+  "Municipal fiber-optic co-ops",
+  "Stray urban wildlife",
+  "Historic neon sign preservation",
+  "Underground pneumatic trash tubes",
+  "Rooftop apiaries",
+  "Night-shift transit deserts",
+  "Vocational robotics labs",
+  "Micro-hospital clinics",
+  "Riverfront barge casinos",
+  "Municipal composting mandates",
+  "Autonomous sidewalk couriers",
+  "Vacant mall conversions",
+  "Geothermal district heating",
+  "Cargo-bike freight depots",
+  "Midnight noise-curfew clubs",
+  "Pop-up container markets",
+  "Urban kelp & oyster farms",
+  "24-hour laundromat libraries",
+  "Solar-shaded bus shelters",
+  "Micro-brewery wastewater",
+  "Historic cobblestone preservation",
+  "Drone-delivery rooftop pads",
+  "Community tool-lending sheds",
+  "Underground parking-garage farms",
+  "Senior-citizen esports leagues",
+  "Civic repair cafés",
+  "Flood-wall mural corridors",
+  "Electric ferry docks",
+  "Modular tiny-home villages",
+  "Zero-waste school cafeterias",
+  "Streetcar priority lanes",
+  "Artisan night-market stalls",
+  "Public-park pickleball wars",
+  "Municipal cold-storage co-ops",
+  "Commuter e-scooter charging hubs",
+] as const;
+
+export const NARRATIVE_CATALYSTS = [
+  "a leaked internal memo",
+  "a viral neighborhood livestream",
+  "a sudden supply-chain bottleneck",
+  "a bizarre court ruling",
+  "a grassroots boycott",
+  "an eccentric philanthropist's conditional grant",
+  "a neighboring suburb poaching businesses",
+  "an infrastructure stress-test failure",
+  "a midnight zoning loophole discovery",
+  "a wildcat union walkout",
+  "an unexpected audit report",
+  "a rogue municipal chatbot error",
+  "a sudden tourist surge",
+  "a heatwave power brownout",
+  "a rival newspaper investigative exposé",
+  "a celebrity endorsement gone wrong",
+  "a municipal bond rating warning",
+  "a neighborhood petition with 12,000 signatures",
+  "a federal compliance deadline",
+  "a freak harbor fog pileup",
+  "a competing guild price war",
+  "a viral satirical social-media trend",
+  "a surprise state inspector visit",
+  "a retired judge's injunction",
+  "a sudden raw-material tariff",
+  "a leaked lobbyist expense sheet",
+] as const;
+
+export const STAKEHOLDER_CLASHES = [
+  "Old-Guard Guilds vs. Gig Workers",
+  "Night-Shift Nurses vs. Luxury Developers",
+  "PTA Parents vs. Tech Startups",
+  "Harbor Dockworkers vs. Waterfront Condos",
+  "Small Bodegas vs. Automated Chains",
+  "Cyclist Couriers vs. Delivery Truckers",
+  "Historic Preservationists vs. Modular Builders",
+  "Senior Pensioners vs. Nightlife Promoters",
+  "Local Artisans vs. Franchise Brokers",
+  "Commuter Rail Riders vs. Ride-Share Fleets",
+  "Urban Ecologists vs. Industrial Founders",
+  "Public Librarians vs. EdTech Vendors",
+  "Street-Food Carts vs. Brick-and-Mortar Bistros",
+  "Tenant Unions vs. Short-Term Rental Hosts",
+  "Volunteer Medics vs. Private Clinic Chains",
+  "Youth Apprentices vs. Licensed Trade Unions",
+  "Rooftop Gardeners vs. Commercial Landlords",
+  "Municipal Clerks vs. AI Automation Consultants",
+] as const;
+
+export interface DocketSeedSlot {
+  pillar: CivicPillar;
+  niche: string;
+  catalyst: string;
+  clash: string;
+  sequelLawTitle?: string;
+}
+
+function shuffleCopy<T>(arr: readonly T[]): T[] {
+  const copy = [...arr];
+  for (let i = copy.length - 1; i > 0; i--) {
     const j = Math.floor(Math.random() * (i + 1));
-    [pool[i], pool[j]] = [pool[j], pool[i]];
+    [copy[i], copy[j]] = [copy[j], copy[i]];
   }
-  return pool.slice(0, count);
+  return copy;
+}
+
+export function generateDocketSeeds(state: GameState): DocketSeedSlot[] {
+  const pillars = sampleFourPillars();
+  const seenText = [
+    ...getCrossGameSeenIssueTitles(),
+    ...state.pastIssueTitles,
+    ...state.enactedPolicies.map((l) => l.policy_name),
+  ]
+    .join(" ")
+    .toLowerCase();
+
+  // Filter niches that haven't appeared in seenIssueTitles or enactedLaws
+  const freshNiches = shuffleCopy(
+    CIVIC_NICHES.filter((n) => {
+      const words = n.toLowerCase().split(/\s+/).filter((w) => w.length >= 5);
+      return !words.some((w) => seenText.includes(w));
+    })
+  );
+  const nichePool = freshNiches.length >= 4 ? freshNiches : shuffleCopy(CIVIC_NICHES);
+  const catalystPool = shuffleCopy(NARRATIVE_CATALYSTS);
+  const clashPool = shuffleCopy(STAKEHOLDER_CLASHES);
+
+  // Reserve 1 or 2 slots exclusively for FOLLOW-UP ARC sequels if laws were enacted in the last 3 turns
+  const recentLaws = state.enactedPolicies.filter(
+    (l) => l.enactedTurn >= Math.max(1, state.time.turn - 3)
+  );
+  const sequelCount = recentLaws.length >= 2 ? 2 : recentLaws.length === 1 ? 1 : 0;
+
+  return pillars.map((pillar, idx): DocketSeedSlot => {
+    if (idx < sequelCount && recentLaws[idx]) {
+      return {
+        pillar,
+        niche: `Direct Consequence of "${recentLaws[idx].policy_name}"`,
+        catalyst: catalystPool[idx % catalystPool.length],
+        clash: clashPool[idx % clashPool.length],
+        sequelLawTitle: recentLaws[idx].policy_name,
+      };
+    }
+    return {
+      pillar,
+      niche: nichePool[idx % nichePool.length],
+      catalyst: catalystPool[idx % catalystPool.length],
+      clash: clashPool[idx % clashPool.length],
+    };
+  });
 }
 
 function buildContextAwareDocketSystemPrompt(
@@ -798,8 +964,13 @@ export async function generateLawAwareMonthlyDocket(
   }
 
   const targetTurn = stateSnapshot.time.turn;
-  const sampledDomains = sampleRandomCivicDomains(4);
-  const targetPillars = sampleFourPillars();
+  const seedSlots = generateDocketSeeds(stateSnapshot);
+  const sampledDomains = seedSlots.map((s) =>
+    s.sequelLawTitle
+      ? `Follow-Up Arc (${s.sequelLawTitle})`
+      : `${s.niche} — ${s.catalyst} (${s.clash})`
+  );
+  const targetPillars = seedSlots.map((s) => s.pillar);
   const crossGameBlacklist = getCrossGameSeenIssueTitles();
   const crossGameKeywords = getCrossGameSeenTopicKeywords();
   const combinedBlacklist = Array.from(
@@ -817,22 +988,26 @@ export async function generateLawAwareMonthlyDocket(
     ", "
   )}). Return ONLY valid raw JSON.`;
 
+  let lastRaw = "";
   for (let attempt = 1; attempt <= 2; attempt++) {
     try {
       const promptToSend =
         attempt === 1
           ? userPrompt
-          : `CRITICAL: Your previous response failed JSON parsing. Return ONLY a single valid raw JSON object matching the exact schema with 4 issues (${targetPillars.join(
+          : `REPAIR PASS: Your previous JSON failed parsing. Fix syntax and return ONLY a single valid raw JSON object matching the exact schema with 4 issues (${targetPillars.join(
               ", "
-            )}). No markdown fences, no commentary.`;
-      const temp = attempt === 1 ? 0.85 : 0.65;
+            )}). Broken output start: ${lastRaw.slice(0, 240)}`;
 
       const rawJson = await webLLMService.requestRawJsonCompletion(
         systemPrompt,
         promptToSend,
-        temp,
-        1650
+        attempt === 1 ? 0.88 : 0.55,
+        1650,
+        attempt === 1
+          ? { top_p: 0.92, frequency_penalty: 0.6 }
+          : { top_p: 0.9 }
       );
+      lastRaw = rawJson;
 
       const aiIssues = parseAndClampAIDocketPayload(
         rawJson,
@@ -2275,6 +2450,7 @@ export async function generateBatchedTurnContent(
 ): Promise<{
   broadsheet: FrontPageBroadsheet;
   docketIssues: MonthlyDocketIssue[];
+  usedDocketFallback: boolean;
 }> {
   const fallbackBroadsheet = buildDeterministicBroadsheet(stateSnapshot);
   const fallbackWithHearings: FrontPageBroadsheet = {
@@ -2286,12 +2462,16 @@ export async function generateBatchedTurnContent(
   };
 
   if (!webLLMService.isEngineReady()) {
-    return { broadsheet: fallbackWithHearings, docketIssues: [] };
+    return {
+      broadsheet: fallbackWithHearings,
+      docketIssues: [],
+      usedDocketFallback: false,
+    };
   }
 
   const targetTurn = stateSnapshot.time.turn;
-  const targetPillars = sampleFourPillars();
-  const sampledDomains = sampleRandomCivicDomains(4);
+  const seedSlots = generateDocketSeeds(stateSnapshot);
+  const targetPillars = seedSlots.map((s) => s.pillar);
   const last8Laws = stateSnapshot.enactedPolicies.slice(0, 8);
   const compactKeywords = Array.from(
     new Set([
@@ -2313,6 +2493,14 @@ export async function generateBatchedTurnContent(
           )
           .join("\n");
 
+  const seedConstraints = seedSlots
+    .map((slot, i) =>
+      slot.sequelLawTitle
+        ? `${i + 1}. [${slot.pillar}] FOLLOW-UP ARC SEQUEL TO "${slot.sequelLawTitle}" | Catalyst: ${slot.catalyst} | Clash: ${slot.clash} (set is_follow_up_arc: true, influenced_by_law: "${slot.sequelLawTitle}")`
+        : `${i + 1}. [${slot.pillar}] ORIGINAL SEED -> Niche: "${slot.niche}" | Catalyst: ${slot.catalyst} | Clash: ${slot.clash} (set is_follow_up_arc: false, MUST NOT revisit any premise in banned keywords/titles or enacted laws)`
+    )
+    .join("\n");
+
   const systemPrompt = `You are the satirical press & legislative engine for "Armchair Mayor" (${stateSnapshot.grid.startingArchetype}, Month ${targetTurn}).
 Doctrines: Fiscal=${stateSnapshot.doctrines.fiscal}, Justice=${stateSnapshot.doctrines.justice}, Urban=${stateSnapshot.doctrines.urban}.
 Mood: ${stateSnapshot.voterSentiment.overallApproval >= 55 ? "Buoyant" : stateSnapshot.voterSentiment.overallApproval < 35 ? "Mutinous" : "Restless"}, Net=${stateSnapshot.treasury.monthlyNet >= 0 ? "Surplus" : "Deficit"}.
@@ -2320,18 +2508,15 @@ Mood: ${stateSnapshot.voterSentiment.overallApproval >= 55 ? "Buoyant" : stateSn
 LAST 8 ACTIVE LAWS:
 ${lawsDigest}
 
-BANNED KEYWORDS/TITLES (DO NOT REPEAT):
+BANNED KEYWORDS/TITLES (DO NOT REPEAT ON ORIGINAL SLOTS):
 ${JSON.stringify(compactKeywords)} | ${JSON.stringify(blacklistTitles)}
 
-REQUIRED 4 DISTINCT PILLARS & DOMAINS:
-1. ${targetPillars[0]} (${sampledDomains[0]})
-2. ${targetPillars[1]} (${sampledDomains[1]})
-3. ${targetPillars[2]} (${sampledDomains[2]})
-4. ${targetPillars[3]} (${sampledDomains[3]})
+MANDATORY 4-SLOT COMBINATORIAL SEEDS (FOLLOW STRICTLY):
+${seedConstraints}
 
 RULES:
 - Newspaper prose must NEVER quote raw metric numbers or deltas; write 3 witty NationStates-style satirical paragraphs + 1 deadpan resident quote + rival quotes (The Metro Chronicle vs The Streetlight).
-- Docket issues must interlock with active laws when present. For crime/pollution/traffic, negative (-15) helps; for land_value/education/health/approval, positive (+15) helps.
+- For crime/pollution/traffic, negative (-15) helps; for land_value/education/health/approval, positive (+15) helps.
 
 Return STRICTLY raw JSON:
 {
@@ -2352,6 +2537,7 @@ Return STRICTLY raw JSON:
       "title": "string",
       "briefing": "string",
       "is_follow_up_arc": boolean,
+      "parent_law_title": "string or null",
       "influenced_by_law": "string or null",
       "presets": [
         {
@@ -2372,16 +2558,24 @@ Return STRICTLY raw JSON:
   ]
 }`;
 
+  let lastRawOutput = "";
   for (let attempt = 1; attempt <= 2; attempt++) {
     try {
-      const rawJson = await webLLMService.requestRawJsonCompletion(
-        systemPrompt,
+      const promptToSend =
         attempt === 1
           ? `Generate Month ${targetTurn} batched broadsheet and 4-issue docket JSON now.`
-          : `CRITICAL: Previous output was invalid JSON. Return ONLY valid raw JSON matching the exact schema.`,
-        attempt === 1 ? 0.82 : 0.65,
-        1100
+          : `REPAIR PASS: Your previous JSON failed parsing. Fix the syntax and return ONLY valid raw JSON matching the schema. Broken output start: ${lastRawOutput.slice(0, 260)}`;
+
+      const rawJson = await webLLMService.requestRawJsonCompletion(
+        systemPrompt,
+        promptToSend,
+        attempt === 1 ? 0.88 : 0.55,
+        1100,
+        attempt === 1
+          ? { top_p: 0.92, frequency_penalty: 0.6 }
+          : { top_p: 0.9 }
       );
+      lastRawOutput = rawJson;
 
       const extracted = sanitizeAndExtractJsonObject(rawJson);
       const parsed = JSON.parse(extracted) as Record<string, unknown>;
@@ -2456,9 +2650,12 @@ Return STRICTLY raw JSON:
 
       if (docketIssues.length > 0) {
         recordCrossGameIssueTitles(docketIssues.map((i) => i.title));
+        return { broadsheet, docketIssues, usedDocketFallback: false };
       }
 
-      return { broadsheet, docketIssues };
+      console.error(
+        `Batched Turn Content Attempt ${attempt}/2 produced 0 valid docket issues.`
+      );
     } catch (err) {
       console.error(
         `Batched Turn Content Error (Attempt ${attempt}/2):`,
@@ -2467,5 +2664,9 @@ Return STRICTLY raw JSON:
     }
   }
 
-  return { broadsheet: fallbackWithHearings, docketIssues: [] };
+  return {
+    broadsheet: fallbackWithHearings,
+    docketIssues: [],
+    usedDocketFallback: true,
+  };
 }
