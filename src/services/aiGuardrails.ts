@@ -132,161 +132,200 @@ export function normalizeDemographic(raw: unknown): Demographic | null {
 }
 
 // ----------------------------------------------------------------------------
-// 2. JSON Sanitizer & Substring Extractor (First '{' to Last '}')
+// 2. Resilient JSON Extractor & Repair Pipeline (First '{' to Balanced '}')
 // ----------------------------------------------------------------------------
 
-/**
- * Sanitizes raw LLM text before JSON.parse():
- * 1. Extracts from the first `{` to the last `}` (or end of string if truncated before the final `}`).
- * 2. Auto-closes any unclosed quotes, `[` arrays, or `{` objects in case a response ever hits the token limit.
- * 3. Removes illegal trailing commas before `}` or `]`.
- */
-export function sanitizeAndExtractJsonObject(rawOutput: string): string {
-  if (typeof rawOutput !== "string" || rawOutput.trim().length === 0) {
-    throw new Error("AI Guardrail Violation: Empty raw output from LLM.");
-  }
-
-  // Strip markdown code fence markers if present
-  const withoutFences = rawOutput.replace(/```(?:json)?/gi, "").trim();
-
-  const firstBrace = withoutFences.indexOf("{");
-  if (firstBrace === -1) {
-    throw new Error(
-      "AI Guardrail Violation: Raw output does not contain an opening '{' JSON brace."
-    );
-  }
-
-  let candidate = withoutFences.slice(firstBrace);
-
-  // Track nesting balance of `{}` and `[]` outside of string literals
-  let inString = false;
-  let escapeNext = false;
-  let lastBalancedRootEnd = -1;
-  const stack: Array<"{" | "["> = [];
-
-  for (let i = 0; i < candidate.length; i++) {
-    const ch = candidate[i];
-    if (escapeNext) {
-      escapeNext = false;
+function skipWsAndComments(src: string, start: number): number {
+  let i = start;
+  while (i < src.length) {
+    const ch = src[i];
+    if (/\s/.test(ch)) {
+      i++;
       continue;
     }
-    if (ch === "\\") {
-      escapeNext = true;
+    if (ch === "/" && src[i + 1] === "/") {
+      i += 2;
+      while (i < src.length && src[i] !== "\n") i++;
+      continue;
+    }
+    if (ch === "/" && src[i + 1] === "*") {
+      i += 2;
+      while (i < src.length && !(src[i] === "*" && src[i + 1] === "/")) i++;
+      i += 2;
+      continue;
+    }
+    break;
+  }
+  return i;
+}
+
+function getLastNonWsChar(text: string): string {
+  for (let i = text.length - 1; i >= 0; i--) {
+    if (!/\s/.test(text[i])) return text[i];
+  }
+  return "";
+}
+
+function needsCommaBeforeNextElement(
+  out: string,
+  containerStack: Array<"{" | "[">
+): boolean {
+  if (containerStack.length === 0) return false;
+  const last = getLastNonWsChar(out);
+  return (
+    last !== "" &&
+    last !== "{" &&
+    last !== "[" &&
+    last !== "," &&
+    last !== ":" &&
+    (last === "}" ||
+      last === "]" ||
+      last === '"' ||
+      (last >= "0" && last <= "9") ||
+      last === "e" || // true / false
+      last === "l") // null
+  );
+}
+
+function stripIncompleteObjectKey(out: string): string {
+  // Remove trailing dangling key right after ',' inside an object: `, "partialKey"` -> ``
+  const afterCommaKey = out.replace(/,\s*"(?:[^"\\]|\\.)*"\s*$/, "");
+  if (afterCommaKey !== out) return afterCommaKey;
+  // Remove lone dangling key right after '{': `{"partialKey"` -> `{`
+  const afterBraceKey = out.replace(/({\s*)"(?:[^"\\]|\\.)*"\s*$/, "$1");
+  return afterBraceKey;
+}
+
+function closeOpenContainers(
+  text: string,
+  stack: Array<"{" | "[">
+): string {
+  let closed = text.replace(/[,\s]+$/, "");
+  const remaining = [...stack];
+  while (remaining.length > 0) {
+    const open = remaining.pop();
+    closed = closed.replace(/,\s*$/, "");
+    closed += open === "{" ? "}" : "]";
+  }
+  return closed;
+}
+
+function rollbackToLastValidJsonBoundary(repaired: string): string | null {
+  // Walk outside strings to collect candidate structural cut boundaries
+  const boundaries: number[] = [];
+  let inStr = false;
+  let esc = false;
+
+  for (let i = 0; i < repaired.length; i++) {
+    const ch = repaired[i];
+    if (esc) {
+      esc = false;
+      continue;
+    }
+    if (inStr) {
+      if (ch === "\\") esc = true;
+      else if (ch === '"') inStr = false;
       continue;
     }
     if (ch === '"') {
-      inString = !inString;
+      inStr = true;
       continue;
     }
-    if (inString) continue;
+    if (ch === ",") {
+      boundaries.push(i);
+    } else if (ch === "}" || ch === "]") {
+      boundaries.push(i + 1);
+    }
+  }
 
-    if (ch === "{" || ch === "[") {
-      stack.push(ch);
-    } else if (ch === "}") {
-      if (stack.length > 0 && stack[stack.length - 1] === "{") {
-        stack.pop();
-        if (stack.length === 0) {
-          lastBalancedRootEnd = i;
-          break;
-        }
+  for (
+    let b = boundaries.length - 1, checked = 0;
+    b >= 0 && checked < 40;
+    b--, checked++
+  ) {
+    const cut = repaired.slice(0, boundaries[b]).replace(/[,\s]+$/, "");
+    if (!cut.startsWith("{")) continue;
+
+    // Recompute open container stack for this clean prefix
+    const prefixStack: Array<"{" | "["> = [];
+    let pInStr = false;
+    let pEsc = false;
+    for (let i = 0; i < cut.length; i++) {
+      const c = cut[i];
+      if (pEsc) {
+        pEsc = false;
+        continue;
       }
-    } else if (ch === "]") {
-      if (stack.length > 0 && stack[stack.length - 1] === "[") {
-        stack.pop();
+      if (pInStr) {
+        if (c === "\\") pEsc = true;
+        else if (c === '"') pInStr = false;
+        continue;
+      }
+      if (c === '"') pInStr = true;
+      else if (c === "{" || c === "[") prefixStack.push(c);
+      else if (c === "}" && prefixStack[prefixStack.length - 1] === "{") {
+        prefixStack.pop();
+      } else if (c === "]" && prefixStack[prefixStack.length - 1] === "[") {
+        prefixStack.pop();
       }
     }
-  }
+    if (pInStr) continue;
 
-  if (lastBalancedRootEnd !== -1) {
-    // The root JSON object closed cleanly; slice off any trailing chatter after it
-    candidate = candidate.slice(0, lastBalancedRootEnd + 1);
-  } else {
-    // Auto-Closing Brace Safety Net: Output truncated before final `}`
-    if (inString) {
-      candidate += '"';
-    }
-    // Strip any dangling trailing comma or incomplete key-value separator before closing
-    candidate = candidate.replace(/[,:\s]+$/, "");
-
-    while (stack.length > 0) {
-      const openChar = stack.pop();
-      candidate += openChar === "{" ? "}" : "]";
+    const cleanedPrefix = stripIncompleteObjectKey(cut);
+    const candidate = closeOpenContainers(cleanedPrefix, prefixStack);
+    try {
+      const parsed = JSON.parse(candidate);
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        return candidate;
+      }
+    } catch {
+      // Keep walking backward to earlier boundary
     }
   }
 
-  // 1. Strip illegal trailing commas before closing braces/brackets: e.g. `{"a": 1,}` -> `{"a": 1}`
-  candidate = candidate.replace(/,\s*([}\]])/g, "$1");
-  // 2. Replace Python literals (None, True, False) when used as JSON values
-  candidate = candidate.replace(/([:,\[]\s*)None\b/g, "$1null");
-  candidate = candidate.replace(/([:,\[]\s*)True\b/g, "$1true");
-  candidate = candidate.replace(/([:,\[]\s*)False\b/g, "$1false");
-  // 3. Strip illegal leading `+` on positive numbers in JSON: e.g. `"change": +10` -> `"change": 10`
-  candidate = candidate.replace(/([:,\[]\s*)\+(\d)/g, "$1$2");
-  // 4. Quote unquoted JS-style object keys right after `{` or `,`: e.g. `{ change: 5 }` -> `{ "change": 5 }`
-  candidate = candidate.replace(/([{,]\s*)([a-zA-Z_][a-zA-Z0-9_]*)\s*:/g, '$1"$2":');
-  // 5. Insert missing commas between adjacent JSON elements separated by newlines/whitespace
-  candidate = candidate.replace(/([}\]0-9]|true|false|null)\s*\n\s*(?=")/g, "$1,\n");
-  candidate = candidate.replace(/"\s*\n\s*(?="[^"]+"\s*:)/g, '",\n');
-  candidate = candidate.replace(/\}\s*\{/g, "},{");
-
-  // 6. Fast-path parse check; if still invalid due to unescaped inner quotes or comments, run repair pass
-  try {
-    JSON.parse(candidate);
-    return candidate;
-  } catch {
-    return repairInnerQuotesAndComments(candidate);
-  }
+  return null;
 }
 
-function repairInnerQuotesAndComments(src: string): string {
-  let out = "";
+function repairMalformedJson(src: string): string {
+  const containerStack: Array<"{" | "["> = [];
+  let expectingKey = false;
   let inString = false;
+  let stringIsKey = false;
   let escapeNext = false;
+  let out = "";
 
   for (let i = 0; i < src.length; i++) {
     const ch = src[i];
-    if (escapeNext) {
-      out += ch;
-      escapeNext = false;
-      continue;
-    }
-    if (ch === "\\" && inString) {
-      out += ch;
-      escapeNext = true;
-      continue;
-    }
-    if (!inString && ch === "/" && src[i + 1] === "/") {
-      // Skip // line comment outside string
-      while (i < src.length && src[i] !== "\n") i++;
-      out += "\n";
-      continue;
-    }
-    if (ch === '"') {
-      if (!inString) {
-        inString = true;
-        out += ch;
-      } else {
-        // Look ahead to next non-whitespace char to see if this legitimately closes the string
-        let j = i + 1;
-        while (j < src.length && /\s/.test(src[j])) j++;
-        const nextCh = src[j] ?? "";
-        if (
-          nextCh === "" ||
-          nextCh === ":" ||
-          nextCh === "," ||
-          nextCh === "}" ||
-          nextCh === "]"
-        ) {
-          inString = false;
-          out += ch;
-        } else {
-          // Unescaped quote inside prose string -> escape it
-          out += '\\"';
-        }
-      }
-      continue;
-    }
+
     if (inString) {
+      if (escapeNext) {
+        escapeNext = false;
+        if (
+          ch === '"' ||
+          ch === "\\" ||
+          ch === "/" ||
+          ch === "b" ||
+          ch === "f" ||
+          ch === "n" ||
+          ch === "r" ||
+          ch === "t"
+        ) {
+          out += `\\${ch}`;
+        } else if (ch === "u" && /^[0-9a-fA-F]{4}/.test(src.slice(i + 1, i + 5))) {
+          out += "\\u";
+        } else if (ch === "'") {
+          // RFC-8259 forbids \' inside JSON strings; emit plain single quote
+          out += "'";
+        } else {
+          out += `\\\\${ch}`;
+        }
+        continue;
+      }
+
+      if (ch === "\\") {
+        escapeNext = true;
+        continue;
+      }
       if (ch === "\n") {
         out += "\\n";
         continue;
@@ -298,22 +337,328 @@ function repairInnerQuotesAndComments(src: string): string {
         out += "\\t";
         continue;
       }
-    } else if (
-      ch.charCodeAt(0) < 32 &&
-      ch !== "\n" &&
-      ch !== "\r" &&
-      ch !== "\t"
-    ) {
+      if (ch.charCodeAt(0) < 32) {
+        continue;
+      }
+
+      if (ch === '"') {
+        const nextIdx = skipWsAndComments(src, i + 1);
+        const nextCh = src[nextIdx] ?? "";
+        const container = containerStack[containerStack.length - 1];
+
+        if (stringIsKey) {
+          if (nextCh === ":" || nextCh === "") {
+            inString = false;
+            stringIsKey = false;
+            out += '"';
+          } else {
+            out += '\\"';
+          }
+          continue;
+        }
+
+        // String value: never terminated by ':' (only by EOF, '}'/']', valid ',', or missing-comma newline before next key)
+        if (nextCh === "") {
+          inString = false;
+          out += '"';
+          continue;
+        }
+
+        if (nextCh === "}" || nextCh === "]") {
+          const afterBracketIdx = skipWsAndComments(src, nextIdx + 1);
+          const afterBracketCh = src[afterBracketIdx] ?? "";
+          if (!/[a-zA-Z]/.test(afterBracketCh)) {
+            inString = false;
+            out += '"';
+            continue;
+          }
+        }
+
+        if (nextCh === ",") {
+          const afterCommaIdx = skipWsAndComments(src, nextIdx + 1);
+          const afterComma = src.slice(afterCommaIdx);
+
+          if (container === "{") {
+            const startsNextObjectEntry =
+              afterComma.length === 0 ||
+              afterComma[0] === "}" ||
+              /^"[^"\n\r]{1,72}"\s*:/.test(afterComma) ||
+              /^[a-zA-Z_][a-zA-Z0-9_]*\s*:/.test(afterComma) ||
+              /^"[a-zA-Z0-9_]*$/.test(afterComma);
+            if (startsNextObjectEntry) {
+              inString = false;
+              out += '"';
+              continue;
+            }
+          } else if (container === "[") {
+            const startsNextArrayItem =
+              afterComma.length === 0 ||
+              afterComma[0] === "]" ||
+              afterComma[0] === "{" ||
+              afterComma[0] === "[" ||
+              afterComma[0] === '"' ||
+              /^(?:true|false|null|True|False|None)\b/.test(afterComma) ||
+              /^[+-]?\d/.test(afterComma);
+            if (startsNextArrayItem) {
+              inString = false;
+              out += '"';
+              continue;
+            }
+          }
+        }
+
+        // Handle omitted comma on newline before next property key `"val"\n "next_key":`
+        if (
+          container === "{" &&
+          src.slice(i + 1, nextIdx).includes("\n") &&
+          /^(?:"[^"\n\r]{1,72}"|[a-zA-Z_][a-zA-Z0-9_]*)\s*:/.test(
+            src.slice(nextIdx)
+          )
+        ) {
+          inString = false;
+          out += '"';
+          continue;
+        }
+
+        // Otherwise this quote is unescaped prose punctuation inside a string value
+        out += '\\"';
+        continue;
+      }
+
+      out += ch;
       continue;
     }
+
+    // Outside string literals
+    if (/\s/.test(ch)) {
+      out += ch;
+      continue;
+    }
+
+    if (ch === "/" && src[i + 1] === "/") {
+      i += 2;
+      while (i < src.length && src[i] !== "\n") i++;
+      out += "\n";
+      continue;
+    }
+
+    if (ch === "/" && src[i + 1] === "*") {
+      i += 2;
+      while (i < src.length && !(src[i] === "*" && src[i + 1] === "/")) i++;
+      i += 1;
+      continue;
+    }
+
+    if (ch === "{") {
+      if (needsCommaBeforeNextElement(out, containerStack)) {
+        out += ",";
+      }
+      containerStack.push("{");
+      expectingKey = true;
+      out += "{";
+      continue;
+    }
+
+    if (ch === "[") {
+      if (needsCommaBeforeNextElement(out, containerStack)) {
+        out += ",";
+      }
+      containerStack.push("[");
+      expectingKey = false;
+      out += "[";
+      continue;
+    }
+
+    if (ch === "}") {
+      out = out.replace(/,\s*$/, "");
+      if (/:\s*$/.test(out)) {
+        out += "null";
+      }
+      if (containerStack[containerStack.length - 1] === "{") {
+        containerStack.pop();
+      }
+      expectingKey = false;
+      out += "}";
+      if (containerStack.length === 0) {
+        return out;
+      }
+      continue;
+    }
+
+    if (ch === "]") {
+      out = out.replace(/,\s*$/, "");
+      if (containerStack[containerStack.length - 1] === "[") {
+        containerStack.pop();
+      }
+      expectingKey = false;
+      out += "]";
+      continue;
+    }
+
+    if (ch === ",") {
+      if (getLastNonWsChar(out) === ",") {
+        continue;
+      }
+      expectingKey = containerStack[containerStack.length - 1] === "{";
+      out += ",";
+      continue;
+    }
+
+    if (ch === ":") {
+      expectingKey = false;
+      out += ":";
+      continue;
+    }
+
+    if (ch === '"') {
+      const insertedComma = needsCommaBeforeNextElement(out, containerStack);
+      if (insertedComma) {
+        out += ",";
+        expectingKey = containerStack[containerStack.length - 1] === "{";
+      }
+      inString = true;
+      stringIsKey =
+        containerStack[containerStack.length - 1] === "{" && expectingKey;
+      out += '"';
+      continue;
+    }
+
+    // Numeric literals (including leading '+', decimals, scientific notation, and truncated tails)
+    if (
+      ch === "-" ||
+      (ch === "+" && /[0-9.]/.test(src[i + 1] ?? "")) ||
+      (ch >= "0" && ch <= "9")
+    ) {
+      if (needsCommaBeforeNextElement(out, containerStack)) {
+        out += ",";
+      }
+      let end = i + 1;
+      while (end < src.length && /[0-9.eE+-]/.test(src[end])) {
+        end++;
+      }
+      let numToken = src.slice(i, end);
+      if (numToken.startsWith("+")) {
+        numToken = numToken.slice(1);
+      }
+      if (/^[+-]?$/.test(numToken)) {
+        numToken = "0";
+      } else {
+        numToken = numToken.replace(/([.eE][+-]?|[+-])$/, "");
+        if (!numToken || !/^-?\d/.test(numToken)) numToken = "0";
+      }
+      out += numToken;
+      i = end - 1;
+      continue;
+    }
+
+    // Unquoted keys or Python/bareword literals (None/True/False)
+    if (/[a-zA-Z_]/.test(ch)) {
+      let end = i + 1;
+      while (end < src.length && /[a-zA-Z0-9_]/.test(src[end])) end++;
+      const word = src.slice(i, end);
+      const afterWordIdx = skipWsAndComments(src, end);
+
+      if (
+        containerStack[containerStack.length - 1] === "{" &&
+        src[afterWordIdx] === ":"
+      ) {
+        if (needsCommaBeforeNextElement(out, containerStack)) {
+          out += ",";
+        }
+        expectingKey = false;
+        out += `"${word}"`;
+      } else {
+        if (needsCommaBeforeNextElement(out, containerStack)) {
+          out += ",";
+        }
+        const lower = word.toLowerCase();
+        if (lower === "none" || lower === "null") out += "null";
+        else if (lower === "true") out += "true";
+        else if (lower === "false") out += "false";
+        else out += word;
+      }
+      i = end - 1;
+      continue;
+    }
+
     out += ch;
   }
 
-  return out.replace(/,\s*([}\]])/g, "$1");
+  // Handle early truncation (max_tokens reached before root closing brace)
+  if (inString) {
+    out += '"';
+    inString = false;
+  }
+
+  out = out.replace(/[,\s]+$/, "");
+  // Complete truncated numeric sign/decimal (e.g., `"monthly_change": -` -> `"monthly_change": 0`)
+  out = out.replace(/([:,\[]\s*)[+-]$/, "$10");
+  out = out.replace(/(:\s*-?\d+)\.$/, "$1");
+  // Complete truncated property colon (`"title":` -> `"title": null`)
+  if (/:\s*$/.test(out)) {
+    out += " null";
+  }
+  // Drop dangling partial object key without value (`{"a": 1, "partial"` -> `{"a": 1`)
+  if (containerStack[containerStack.length - 1] === "{") {
+    out = stripIncompleteObjectKey(out);
+  }
+
+  const repairedClosed = closeOpenContainers(out, containerStack);
+  try {
+    JSON.parse(repairedClosed);
+    return repairedClosed;
+  } catch {
+    const rolledBack = rollbackToLastValidJsonBoundary(out);
+    if (rolledBack) {
+      return rolledBack;
+    }
+    return repairedClosed;
+  }
 }
 
-// Preserve export alias used by crisisEngine.ts
-export const extractJsonObjectString = sanitizeAndExtractJsonObject;
+/**
+ * Extracts and repairs LLM JSON output before `JSON.parse()`:
+ * 1. Strips markdown fences (```json / ```) and locates the first `{` to last `}`.
+ * 2. Fast-paths clean complete JSON objects without altering characters.
+ * 3. Repairs unescaped inner double quotes in prose strings, illegal trailing commas,
+ *    Python literals, `+` number prefixes, unquoted keys, and `\'` escapes.
+ * 4. If truncated early before closing braces, closes open quotes/brackets (or rolls back
+ *    to the last complete boundary) so partial valid items still parse cleanly.
+ */
+export function extractAndRepairJson(rawText: string): string {
+  if (typeof rawText !== "string" || rawText.trim().length === 0) {
+    throw new Error("AI Guardrail Violation: Empty raw output from LLM.");
+  }
+
+  const withoutFences = rawText.replace(/```(?:json)?/gi, "").trim();
+  const firstBrace = withoutFences.indexOf("{");
+  if (firstBrace === -1) {
+    throw new Error(
+      "AI Guardrail Violation: Raw output does not contain an opening '{' JSON brace."
+    );
+  }
+
+  const fromFirst = withoutFences.slice(firstBrace);
+  const lastBrace = fromFirst.lastIndexOf("}");
+  if (lastBrace !== -1) {
+    const directSlice = fromFirst.slice(0, lastBrace + 1);
+    const commaCleaned = directSlice.replace(/,\s*([}\]])/g, "$1");
+    try {
+      const parsed = JSON.parse(commaCleaned);
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        return commaCleaned;
+      }
+    } catch {
+      // Fall through to full context-aware repair
+    }
+  }
+
+  return repairMalformedJson(fromFirst);
+}
+
+// Preserve aliases used by aiGuardrails callers & crisisEngine.ts
+export const sanitizeAndExtractJsonObject = extractAndRepairJson;
+export const extractJsonObjectString = extractAndRepairJson;
 
 /**
  * Cleans `unintended_consequence_trigger` so literal schema placeholders

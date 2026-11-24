@@ -29,10 +29,15 @@ import { useGameStore } from "../store/useGameStore";
 import {
   AI_GUARDRAIL_LIMITS,
   buildGridlockedFallbackPolicy,
+  extractAndRepairJson,
   normalizeCivicPillar,
   parseAndClampAIPolicyResponse,
-  sanitizeAndExtractJsonObject,
 } from "./aiGuardrails";
+
+export { extractAndRepairJson };
+
+const SINGLE_QUOTE_JSON_RULE =
+  "Use single quotes (' ') instead of double quotes inside all narrative text and citizen quotes so JSON strings never break.";
 
 // ----------------------------------------------------------------------------
 // 1. Model Configuration & UI Loading State Telemetry
@@ -143,7 +148,7 @@ Evaluate the player's proposed policy and return STRICTLY a valid JSON object ma
 }
 
 CRITICAL MATH RULE: For 'pollution', 'crime', and 'traffic', a NEGATIVE change (e.g., -15) REDUCES the problem and helps the city, while a POSITIVE change (e.g., +15) WORSENS the problem. For 'land_value' and 'demographic_approval', a POSITIVE change (+15) improves value/approval, and a NEGATIVE change (-15) reduces it.
-CRITICAL: Respond ONLY with a valid raw JSON object matching the exact schema. Do not include markdown fences or conversational text.`;
+CRITICAL: Respond ONLY with a valid raw JSON object matching the exact schema. Do not include markdown fences or conversational text. ${SINGLE_QUOTE_JSON_RULE}`;
 }
 
 // ----------------------------------------------------------------------------
@@ -297,11 +302,33 @@ class WebLLMService {
     return Boolean(this.engine && this.status.isReady);
   }
 
+  private async createCompletionWithFallback(
+    payload: webllm.ChatCompletionRequestNonStreaming
+  ): Promise<webllm.ChatCompletion> {
+    if (!this.engine) {
+      throw new Error("WebLLM engine not initialized.");
+    }
+    try {
+      return await this.engine.chat.completions.create(payload);
+    } catch (err) {
+      if (payload.frequency_penalty !== undefined) {
+        const { frequency_penalty: _fp, ...withoutFp } = payload;
+        void _fp;
+        return this.createCompletionWithFallback(withoutFp);
+      }
+      if (payload.response_format !== undefined) {
+        const { response_format: _rf, ...withoutRf } = payload;
+        void _rf;
+        return this.createCompletionWithFallback(withoutRf);
+      }
+      throw err;
+    }
+  }
+
   /**
-   * Executes a low-temperature chat completion against the local WebGPU model.
-   * NOTE: `response_format` is intentionally omitted to avoid the WebLLM XGrammar
-   * WASM `GrammarMatcherInitError: Cannot pass non-string to std::string` crash on Llama-3-8B.
-   * All callers enforce raw JSON output via system prompts and extract the first `{` to last `}`.
+   * Executes a chat completion against the local WebGPU model using constrained
+   * JSON object mode (`response_format: { type: "json_object" }`) with graceful fallback
+   * and an automatic strict retry if conversational prose omits `{`.
    */
   public async requestRawJsonCompletion(
     systemPrompt: string,
@@ -328,25 +355,14 @@ class WebLLMService {
       ],
       temperature,
       max_tokens: maxTokens,
+      response_format: { type: "json_object" },
       ...(samplingOpts?.top_p !== undefined ? { top_p: samplingOpts.top_p } : {}),
       ...(samplingOpts?.frequency_penalty !== undefined
         ? { frequency_penalty: samplingOpts.frequency_penalty }
         : {}),
     };
 
-    let response: webllm.ChatCompletion;
-    try {
-      response = await this.engine.chat.completions.create(requestPayload);
-    } catch (err) {
-      if (samplingOpts?.frequency_penalty !== undefined) {
-        // Fallback if a specific WebLLM runtime rejects frequency_penalty
-        const { frequency_penalty: _fp, ...safeRest } = requestPayload;
-        void _fp;
-        response = await this.engine.chat.completions.create(safeRest);
-      } else {
-        throw err;
-      }
-    }
+    const response = await this.createCompletionWithFallback(requestPayload);
 
     const content = response.choices?.[0]?.message?.content;
     if (!content) {
@@ -355,16 +371,17 @@ class WebLLMService {
 
     // If the model replied conversationally without any '{', perform 1 strict JSON retry
     if (!content.includes("{")) {
-      const retryResponse = await this.engine.chat.completions.create({
+      const retryResponse = await this.createCompletionWithFallback({
         messages: [
           { role: "system", content: systemPrompt },
           {
             role: "user",
-            content: `${userPrompt}\n\nCRITICAL: Your response MUST start with '{' and end with '}'. Output ONLY raw JSON, zero prose.`,
+            content: `${userPrompt}\n\nCRITICAL: Return ONLY valid RFC-8259 JSON with single quotes inside strings. Start with '{' and end with '}'. Zero prose.`,
           },
         ],
         temperature: 0.25,
         max_tokens: maxTokens,
+        response_format: { type: "json_object" },
       });
       const retryContent = retryResponse.choices?.[0]?.message?.content;
       if (retryContent && retryContent.includes("{")) {
@@ -849,7 +866,7 @@ Return STRICTLY a valid raw JSON object matching this schema:
   ]
 }
 
-CRITICAL: Respond ONLY with valid raw JSON.`;
+CRITICAL: Respond ONLY with valid RFC-8259 raw JSON. ${SINGLE_QUOTE_JSON_RULE}`;
 }
 
 function parseAndClampAIDocketPayload(
@@ -857,7 +874,7 @@ function parseAndClampAIDocketPayload(
   turn: number,
   pastTitles: string[]
 ): MonthlyDocketIssue[] {
-  const jsonStr = sanitizeAndExtractJsonObject(rawText);
+  const jsonStr = extractAndRepairJson(rawText);
   const parsed = JSON.parse(jsonStr) as unknown;
   const parsedObj =
     parsed && typeof parsed === "object" && !Array.isArray(parsed)
@@ -1041,15 +1058,15 @@ export async function generateLawAwareMonthlyDocket(
       const promptToSend =
         attempt === 1
           ? userPrompt
-          : `REPAIR PASS: Your previous JSON failed parsing. Fix syntax and return ONLY a single valid raw JSON object matching the exact schema with 4 issues (${targetPillars.join(
+          : `REPAIR PASS: Your previous JSON failed parsing. Return ONLY valid RFC-8259 JSON with single quotes inside strings. Do not use unescaped double quotes inside narrative text or citizen quotes. Target pillars: (${targetPillars.join(
               ", "
-            )}). Broken output start: ${lastRaw.slice(0, 240)}`;
+            )}).${lastRaw ? ` Malformed snippet tail: ${lastRaw.slice(-300)}` : ""}`;
 
       const rawJson = await webLLMService.requestRawJsonCompletion(
         systemPrompt,
         promptToSend,
-        attempt === 1 ? 0.88 : 0.35,
-        1650,
+        attempt === 1 ? 0.85 : 0.65,
+        1800,
         attempt === 1
           ? { top_p: 0.92, frequency_penalty: 0.15 }
           : { top_p: 0.9 }
@@ -1145,7 +1162,7 @@ Return STRICTLY a valid raw JSON object:
   "loophole_warning": "string (Exactly 2 sentences)"
 }
 
-CRITICAL: Respond ONLY with a valid raw JSON object matching the exact schema. Do not include markdown fences or conversational text.`;
+CRITICAL: Respond ONLY with a valid raw JSON object matching the exact schema. Do not include markdown fences or conversational text. ${SINGLE_QUOTE_JSON_RULE}`;
 
   try {
     const rawJson = await webLLMService.requestRawJsonCompletion(
@@ -1154,7 +1171,7 @@ CRITICAL: Respond ONLY with a valid raw JSON object matching the exact schema. D
       0.5,
       320
     );
-    const extracted = sanitizeAndExtractJsonObject(rawJson);
+    const extracted = extractAndRepairJson(rawJson);
     const parsed = JSON.parse(extracted) as Record<string, unknown>;
     if (
       typeof parsed.loophole_warning === "string" &&
@@ -1260,7 +1277,7 @@ Return STRICTLY a valid raw JSON object:
   ]
 }
 
-CRITICAL: Respond ONLY with a valid raw JSON object matching the exact schema. Do not include markdown fences or conversational text.`;
+CRITICAL: Respond ONLY with a valid raw JSON object matching the exact schema. Do not include markdown fences or conversational text. ${SINGLE_QUOTE_JSON_RULE}`;
 
   try {
     const rawJson = await webLLMService.requestRawJsonCompletion(
@@ -1269,7 +1286,7 @@ CRITICAL: Respond ONLY with a valid raw JSON object matching the exact schema. D
       0.7,
       512
     );
-    const extracted = sanitizeAndExtractJsonObject(rawJson);
+    const extracted = extractAndRepairJson(rawJson);
     const parsed = JSON.parse(extracted) as Record<string, unknown>;
     const rawQs = Array.isArray(parsed.questions) ? parsed.questions : [];
     if (rawQs.length >= 2) {
@@ -1392,7 +1409,7 @@ Return STRICTLY a valid raw JSON object:
   "capital_change": number (integer -10 to 15)
 }
 
-CRITICAL: Respond ONLY with a valid raw JSON object matching the exact schema. Do not include markdown fences or conversational text.`;
+CRITICAL: Respond ONLY with a valid raw JSON object matching the exact schema. Do not include markdown fences or conversational text. ${SINGLE_QUOTE_JSON_RULE}`;
 
   try {
     const rawJson = await webLLMService.requestRawJsonCompletion(
@@ -1401,7 +1418,7 @@ CRITICAL: Respond ONLY with a valid raw JSON object matching the exact schema. D
       0.35,
       320
     );
-    const extracted = sanitizeAndExtractJsonObject(rawJson);
+    const extracted = extractAndRepairJson(rawJson);
     const parsed = JSON.parse(extracted) as Partial<TownHallGradingResult>;
     return clampTownHallResult(parsed);
   } catch (err) {
@@ -1498,7 +1515,7 @@ Return STRICTLY a valid raw JSON object:
   "district_names": ["NAME 1", "NAME 2", "NAME 3", "NAME 4"]
 }
 
-CRITICAL: Respond ONLY with a valid raw JSON object matching the exact schema. Do not include markdown fences or conversational text.`;
+CRITICAL: Respond ONLY with a valid raw JSON object matching the exact schema. Do not include markdown fences or conversational text. ${SINGLE_QUOTE_JSON_RULE}`;
 
   try {
     const rawJson = await webLLMService.requestRawJsonCompletion(
@@ -1507,7 +1524,7 @@ CRITICAL: Respond ONLY with a valid raw JSON object matching the exact schema. D
       0.7,
       512
     );
-    const extracted = sanitizeAndExtractJsonObject(rawJson);
+    const extracted = extractAndRepairJson(rawJson);
     const p = JSON.parse(extracted) as Record<string, unknown>;
 
     const clampStat = (v: unknown, min: number, max: number, fb: number) => {
@@ -1609,7 +1626,7 @@ Return STRICTLY a valid raw JSON object:
   "encyclopedia_entry": "string (3 sentences, neutral Wikipedia encyclopedia tone)"
 }
 
-CRITICAL: Respond ONLY with a valid raw JSON object matching the exact schema. Do not include markdown fences or conversational text.`;
+CRITICAL: Respond ONLY with a valid raw JSON object matching the exact schema. Do not include markdown fences or conversational text. ${SINGLE_QUOTE_JSON_RULE}`;
 
   try {
     const rawJson = await webLLMService.requestRawJsonCompletion(
@@ -1618,7 +1635,7 @@ CRITICAL: Respond ONLY with a valid raw JSON object matching the exact schema. D
       0.55,
       360
     );
-    const extracted = sanitizeAndExtractJsonObject(rawJson);
+    const extracted = extractAndRepairJson(rawJson);
     const parsed = JSON.parse(extracted) as Record<string, unknown>;
     if (
       typeof parsed.encyclopedia_entry === "string" &&
@@ -1877,7 +1894,7 @@ Return STRICTLY a valid raw JSON object matching this exact schema:
   "on_the_horizon_warning": "string (1 bold Comptroller/Analyst warning foreshadowing looming risks)"
 }
 
-CRITICAL: Respond ONLY with valid raw JSON. Start with { and end with }. Never output the literal word "string".`;
+CRITICAL: Respond ONLY with valid RFC-8259 raw JSON. Start with { and end with }. Never output the literal word "string". ${SINGLE_QUOTE_JSON_RULE}`;
 
   let lastRaw = "";
   for (let attempt = 1; attempt <= 2; attempt++) {
@@ -1885,15 +1902,17 @@ CRITICAL: Respond ONLY with valid raw JSON. Start with { and end with }. Never o
       const prompt =
         attempt === 1
           ? "Publish this month's multi-paragraph front-page broadsheet JSON now."
-          : `REPAIR PASS: Fix syntax and return ONLY valid raw JSON starting with {. Broken output start: ${lastRaw.slice(0, 220)}`;
+          : `REPAIR PASS: Fix syntax and return ONLY valid RFC-8259 JSON with single quotes inside strings.${
+              lastRaw ? ` Malformed snippet tail: ${lastRaw.slice(-300)}` : ""
+            }`;
       const rawJson = await webLLMService.requestRawJsonCompletion(
         systemPrompt,
         prompt,
-        attempt === 1 ? 0.84 : 0.35,
-        1450
+        attempt === 1 ? 0.84 : 0.65,
+        1800
       );
       lastRaw = rawJson;
-      const extracted = sanitizeAndExtractJsonObject(rawJson);
+      const extracted = extractAndRepairJson(rawJson);
       const parsed = JSON.parse(extracted) as Record<string, unknown>;
 
       const str = (key: string, fb: string, maxLen = 420): string => {
@@ -2129,7 +2148,7 @@ Return STRICTLY a valid raw JSON object:
   ]
 }
 
-CRITICAL: Respond ONLY with valid raw JSON.`;
+CRITICAL: Respond ONLY with valid RFC-8259 raw JSON. ${SINGLE_QUOTE_JSON_RULE}`;
 
   try {
     const rawJson = await webLLMService.requestRawJsonCompletion(
@@ -2138,7 +2157,7 @@ CRITICAL: Respond ONLY with valid raw JSON.`;
       0.7,
       850
     );
-    const extracted = sanitizeAndExtractJsonObject(rawJson);
+    const extracted = extractAndRepairJson(rawJson);
     const parsed = JSON.parse(extracted) as Record<string, unknown>;
 
     const entry =
@@ -2370,7 +2389,9 @@ Return STRICTLY valid raw JSON:
       }
     }
   ]
-}`;
+}
+
+CRITICAL: Respond ONLY with valid RFC-8259 raw JSON. ${SINGLE_QUOTE_JSON_RULE}`;
 
   let lastRaw = "";
   for (let attempt = 1; attempt <= 2; attempt++) {
@@ -2378,15 +2399,17 @@ Return STRICTLY valid raw JSON:
       const prompt =
         attempt === 1
           ? "Draft the Sponsored Bill JSON now."
-          : `REPAIR PASS: Fix syntax and return ONLY valid raw JSON starting with {. Broken output start: ${lastRaw.slice(0, 220)}`;
+          : `REPAIR PASS: Fix syntax and return ONLY valid RFC-8259 JSON with single quotes inside strings.${
+              lastRaw ? ` Malformed snippet tail: ${lastRaw.slice(-300)}` : ""
+            }`;
       const rawJson = await webLLMService.requestRawJsonCompletion(
         systemPrompt,
         prompt,
-        attempt === 1 ? 0.55 : 0.25,
-        1100
+        attempt === 1 ? 0.55 : 0.65,
+        1800
       );
       lastRaw = rawJson;
-      const extracted = sanitizeAndExtractJsonObject(rawJson);
+      const extracted = extractAndRepairJson(rawJson);
       const parsed = JSON.parse(extracted) as Record<string, unknown>;
       const pillar =
         normalizeCivicPillar(parsed.target_pillar) ?? fallback.targetPillar;
@@ -2495,7 +2518,9 @@ Return STRICTLY valid raw JSON:
       "streetlight_take": "string (1-sentence grassroots/labor take)"
     }
   ]
-}`;
+}
+
+CRITICAL: Respond ONLY with valid RFC-8259 raw JSON. ${SINGLE_QUOTE_JSON_RULE}`;
 
   try {
     const rawJson = await webLLMService.requestRawJsonCompletion(
@@ -2504,7 +2529,7 @@ Return STRICTLY valid raw JSON:
       0.8,
       700
     );
-    const extracted = sanitizeAndExtractJsonObject(rawJson);
+    const extracted = extractAndRepairJson(rawJson);
     const parsed = JSON.parse(extracted) as Record<string, unknown>;
     const rawHearings = Array.isArray(parsed.hearings) ? parsed.hearings : [];
 
@@ -2551,9 +2576,9 @@ Return STRICTLY valid raw JSON:
 }
 
 // ----------------------------------------------------------------------------
-// 11. Performance Pass: Batched Single-Call Between-Turn AI Inference
-// Consolidates Monthly Broadsheet + Rival Op-Eds + Next Month's 4 Docket Issues
-// into ONE structured JSON call (max_tokens: 1100, last 8 laws, compact keywords).
+// 11. Sequential Between-Turn AI Inference
+// Separates Next Month's 4 Docket Issues and Monthly Broadsheet into two clean
+// sequential calls (each with max_tokens: 1800) so long satire never truncates.
 // ----------------------------------------------------------------------------
 
 export async function generateBatchedTurnContent(
@@ -2581,245 +2606,35 @@ export async function generateBatchedTurnContent(
     };
   }
 
-  const targetTurn = stateSnapshot.time.turn;
-  const seedSlots = generateDocketSeeds(stateSnapshot);
-  const targetPillars = seedSlots.map((s) => s.pillar);
-  const lastMonthTurn = Math.max(1, targetTurn - 1);
-  const lastMonthLaws = stateSnapshot.enactedPolicies.filter(
-    (l) => l.enactedTurn >= lastMonthTurn
-  );
-  const earlierLaws = stateSnapshot.enactedPolicies
-    .filter((l) => l.enactedTurn < lastMonthTurn)
-    .slice(0, 6);
+  // Call 1 (max_tokens: 1800): Generate next month's 4 law-aware Legislative Docket issues
+  const docketIssues = await generateLawAwareMonthlyDocket(stateSnapshot);
 
-  const compactKeywords = Array.from(
-    new Set([
-      ...getCrossGameSeenTopicKeywords(),
-      ...(stateSnapshot.seenTopicKeywords ?? []),
-    ])
-  ).slice(-25);
-  const blacklistTitles = Array.from(
-    new Set([...getCrossGameSeenIssueTitles(), ...stateSnapshot.pastIssueTitles])
-  ).slice(-25);
+  // Pass newly generated docket issues into the sequential Broadsheet call
+  const broadsheetContextState: GameState =
+    docketIssues.length > 0
+      ? { ...stateSnapshot, monthlyDocket: docketIssues }
+      : stateSnapshot;
 
-  const formatLawLine = (l: (typeof stateSnapshot.enactedPolicies)[number]) => {
-    const isEO = (l.sourceLabel ?? "").toLowerCase().includes("executive order");
-    const tag = isEO ? "UNILATERAL EXECUTIVE ORDER BYPASS" : l.sourceLabel ?? "Enacted Law";
-    return `- [${tag} | Month ${l.enactedTurn}] "${l.policy_name}": ${
-      l.originalPromptText ?? l.vibe_feed_headline
-    } (Fallout: ${l.unintended_consequence_trigger ?? "None"})`;
-  };
-
-  const lastMonthDigest =
-    lastMonthLaws.length === 0
-      ? "None enacted last month (react to active doctrines & older laws)."
-      : lastMonthLaws.map(formatLawLine).join("\n");
-
-  const earlierLawsDigest =
-    earlierLaws.length === 0 ? "None." : earlierLaws.map(formatLawLine).join("\n");
-
-  const seedConstraints = seedSlots
-    .map((slot, i) =>
-      slot.sequelLawTitle
-        ? `${i + 1}. [${slot.pillar}] FOLLOW-UP ARC SEQUEL TO "${slot.sequelLawTitle}" | Catalyst: ${slot.catalyst} | Clash: ${slot.clash} (set is_follow_up_arc: true, influenced_by_law: "${slot.sequelLawTitle}")`
-        : `${i + 1}. [${slot.pillar}] ORIGINAL SEED -> Niche: "${slot.niche}" | Catalyst: ${slot.catalyst} | Clash: ${slot.clash} (set is_follow_up_arc: false, MUST NOT revisit any premise in banned keywords/titles or enacted laws)`
-    )
-    .join("\n");
-
-  const systemPrompt = `You are the satirical press & legislative engine for "Armchair Mayor" (${stateSnapshot.grid.startingArchetype}, Month ${targetTurn}).
-Doctrines: Fiscal=${stateSnapshot.doctrines.fiscal}, Justice=${stateSnapshot.doctrines.justice}, Urban=${stateSnapshot.doctrines.urban}.
-Mood: ${stateSnapshot.voterSentiment.overallApproval >= 55 ? "Buoyant" : stateSnapshot.voterSentiment.overallApproval < 35 ? "Mutinous" : "Restless"}, Net=${stateSnapshot.treasury.monthlyNet >= 0 ? "Surplus" : "Deficit"}.
-
-DECREES & EXECUTIVE ORDERS ENACTED LAST MONTH (MUST BE FEATURED IN FRONT-PAGE FALLOUT):
-${lastMonthDigest}
-
-EARLIER ACTIVE LAWS:
-${earlierLawsDigest}
-
-BANNED KEYWORDS/TITLES (DO NOT REPEAT ON ORIGINAL SLOTS):
-${JSON.stringify(compactKeywords)} | ${JSON.stringify(blacklistTitles)}
-
-MANDATORY 4-SLOT COMBINATORIAL SEEDS (FOLLOW STRICTLY):
-${seedConstraints}
-
-RULES:
-- "broadsheet.fallout_paragraphs" MUST directly name and satirize the DECREES & EXECUTIVE ORDERS ENACTED LAST MONTH above (including roasting any Unilateral Executive Order bypasses!).
-- Newspaper prose must NEVER quote raw metric numbers or deltas; write 3 witty NationStates-style satirical paragraphs + 1 deadpan resident quote + rival quotes (The Metro Chronicle vs The Streetlight).
-- For crime/pollution/traffic, negative (-15) helps; for land_value/education/health/approval, positive (+15) helps.
-
-Return STRICTLY raw JSON:
-{
-  "broadsheet": {
-    "lead_headline": "string",
-    "subhead": "string",
-    "fallout_paragraphs": ["string", "string", "string"],
-    "resident_quote": "string",
-    "crises_paragraphs": ["string", "string"],
-    "metro_chronicle_take": "string",
-    "streetlight_take": "string",
-    "on_the_horizon_warning": "string"
-  },
-  "issues": [
-    {
-      "pillar": "${targetPillars.join('" | "')}",
-      "domain_tag": "string",
-      "title": "string",
-      "briefing": "string",
-      "is_follow_up_arc": boolean,
-      "parent_law_title": "string or null",
-      "influenced_by_law": "string or null",
-      "presets": [
-        {
-          "stance_label": "string",
-          "option_title": "string",
-          "description": "string",
-          "policy_effect": {
-            "policy_name": "string",
-            "vibe_feed_headline": "string",
-            "budget_impact": { "monthly_change": number },
-            "heatmap_modifiers": [{ "metric": "crime"|"pollution"|"land_value"|"traffic"|"education"|"health", "change": number }],
-            "demographic_approval": [{ "demographic": "working_class"|"wealthy"|"business"|"environmentalists", "change": number }],
-            "unintended_consequence_trigger": "None" or "string"
-          }
-        }
-      ]
-    }
-  ]
-}`;
-
-  let bestBroadsheet: FrontPageBroadsheet = fallbackWithHearings;
-  let broadsheetSucceeded = false;
-
-  // Pass 1: Single batched call for Broadsheet + 4 Docket Issues (low frequency_penalty so JSON keys aren't corrupted)
+  // Call 2 (max_tokens: 1800): Generate The Municipal Dispatch broadsheet separately
+  let broadsheet: FrontPageBroadsheet = fallbackWithHearings;
   try {
-    const rawJson = await webLLMService.requestRawJsonCompletion(
-      systemPrompt,
-      `Generate Month ${targetTurn} batched broadsheet and 4-issue docket JSON now.`,
-      0.85,
-      2200,
-      { top_p: 0.92, frequency_penalty: 0.15 }
+    const generatedBroadsheet = await generateMonthlyBroadsheet(
+      broadsheetContextState
     );
-
-    const extracted = sanitizeAndExtractJsonObject(rawJson);
-    const parsed = JSON.parse(extracted) as Record<string, unknown>;
-    const bObj = (parsed.broadsheet ?? {}) as Record<string, unknown>;
-
-    const str = (v: unknown, fb: string, maxLen = 400): string =>
-      typeof v === "string" &&
-      v.trim().length > 5 &&
-      v.trim().toLowerCase() !== "string"
-        ? v.trim().slice(0, maxLen)
-        : fb;
-
-    const strArr = (v: unknown, fb: string[], minLen = 2): string[] => {
-      if (!Array.isArray(v)) return fb;
-      const cleaned = v
-        .filter((x): x is string => typeof x === "string")
-        .map((x) => x.trim())
-        .filter((x) => x.length > 18 && x.toLowerCase() !== "string")
-        .map((x) => x.slice(0, 480));
-      return cleaned.length >= minLen ? cleaned.slice(0, 4) : fb;
+    broadsheet = {
+      ...generatedBroadsheet,
+      publicHearingsDebate:
+        hearings.length > 0
+          ? hearings
+          : generatedBroadsheet.publicHearingsDebate,
     };
-
-    const falloutParagraphs = strArr(
-      bObj.fallout_paragraphs,
-      fallbackWithHearings.falloutParagraphs,
-      2
-    );
-    const crisesParagraphs = strArr(
-      bObj.crises_paragraphs,
-      fallbackWithHearings.crisesParagraphs,
-      2
-    );
-
-    if (typeof bObj.lead_headline === "string" && bObj.lead_headline.trim().length > 5) {
-      bestBroadsheet = {
-        ...fallbackWithHearings,
-        leadHeadline: str(bObj.lead_headline, fallbackWithHearings.leadHeadline, 110),
-        subhead: str(bObj.subhead, fallbackWithHearings.subhead, 200),
-        humanScaleRipple:
-          falloutParagraphs[1] ??
-          falloutParagraphs[0] ??
-          fallbackWithHearings.humanScaleRipple,
-        falloutParagraphs,
-        crisesParagraphs,
-        residentQuote: str(
-          bObj.resident_quote,
-          fallbackWithHearings.residentQuote ?? "",
-          260
-        ),
-        metroChronicleTake: str(
-          bObj.metro_chronicle_take,
-          fallbackWithHearings.metroChronicleTake,
-          200
-        ),
-        streetlightTake: str(
-          bObj.streetlight_take,
-          fallbackWithHearings.streetlightTake,
-          200
-        ),
-        onTheHorizonWarning: str(
-          bObj.on_the_horizon_warning,
-          fallbackWithHearings.onTheHorizonWarning,
-          220
-        ),
-        isAIGenerated: true,
-      };
-      broadsheetSucceeded = true;
-    }
-
-    const rawIssues = Array.isArray(parsed.issues)
-      ? parsed.issues
-      : Array.isArray(bObj.issues)
-      ? bObj.issues
-      : null;
-
-    if (rawIssues) {
-      const docketIssues = parseAndClampAIDocketPayload(
-        JSON.stringify({ issues: rawIssues }),
-        targetTurn,
-        blacklistTitles
-      );
-      if (docketIssues.length > 0) {
-        recordCrossGameIssueTitles(docketIssues.map((i) => i.title));
-        return {
-          broadsheet: bestBroadsheet,
-          docketIssues,
-          usedDocketFallback: false,
-        };
-      }
-    }
   } catch (err) {
-    console.error("Batched Turn Content Pass 1 Notice:", err);
-  }
-
-  // Pass 2 (Focused Recovery): If broadsheet didn't succeed, generate broadsheet cleanly;
-  // and generate the 4 docket issues via the dedicated docket-only prompt.
-  if (!broadsheetSucceeded) {
-    try {
-      const generatedBroadsheet = await generateMonthlyBroadsheet(stateSnapshot);
-      bestBroadsheet = {
-        ...generatedBroadsheet,
-        publicHearingsDebate:
-          hearings.length > 0 ? hearings : generatedBroadsheet.publicHearingsDebate,
-      };
-    } catch (err) {
-      console.error("Broadsheet Recovery Pass Error:", err);
-    }
-  }
-
-  const repairedIssues = await generateLawAwareMonthlyDocket(stateSnapshot);
-  if (repairedIssues.length > 0) {
-    return {
-      broadsheet: bestBroadsheet,
-      docketIssues: repairedIssues,
-      usedDocketFallback: false,
-    };
+    console.error("Sequential Broadsheet Generation Error:", err);
   }
 
   return {
-    broadsheet: bestBroadsheet,
-    docketIssues: [],
-    usedDocketFallback: true,
+    broadsheet,
+    docketIssues,
+    usedDocketFallback: docketIssues.length === 0,
   };
 }
