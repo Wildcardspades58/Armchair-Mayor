@@ -6,7 +6,7 @@
 //    - Tab 2: ⚖️ LEGISLATIVE DOCKET (X/4 PENDING) (4-issue voting desk)
 // ============================================================================
 
-import React, { useMemo, useRef, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { useGameStore } from "../store/useGameStore";
 import {
   CivicPillar,
@@ -54,6 +54,8 @@ export const CenterBroadsheetDesk: React.FC = () => {
   const cityReport = useGameStore((s) => s.cityReport);
   const civicServices = useGameStore((s) => s.civicServices);
   const treasury = useGameStore((s) => s.treasury);
+  const doctrines = useGameStore((s) => s.doctrines);
+  const demographics = useGameStore((s) => s.voterSentiment.demographics);
   const monthlyDocket = useGameStore((s) => s.monthlyDocket);
   const isGeneratingDocket = useGameStore((s) => s.isGeneratingDocket);
   const centerDeskTab = useGameStore((s) => s.centerDeskTab);
@@ -91,6 +93,10 @@ export const CenterBroadsheetDesk: React.FC = () => {
   const [hoveredPreset, setHoveredPreset] = useState<DocketPresetOption | null>(
     null
   );
+
+  useEffect(() => {
+    setSelectedIssueId(null);
+  }, [activeDocketPillar, monthlyDocket]);
 
   const activeIssue = useMemo(
     () =>
@@ -348,10 +354,24 @@ export const CenterBroadsheetDesk: React.FC = () => {
                 {broadsheet.leadHeadline}
               </h1>
               <p className="gov-broadsheet-subhead">{broadsheet.subhead}</p>
+
+              {/* Satirical Sub-Masthead Ribbon */}
+              <div className="gov-broadsheet-submasthead-ribbon">
+                <span>
+                  {broadsheet.weatherForecast ??
+                    "FORECAST: Mild civic humidity with a chance of subcommittee theatrics."}
+                </span>
+                <span>
+                  DOCTRINES: {doctrines.fiscal.toUpperCase()} /{" "}
+                  {doctrines.justice.toUpperCase()} /{" "}
+                  {doctrines.urban.toUpperCase()}
+                </span>
+                <span>ALL THE NEWS THAT FITS THE AGENDA</span>
+              </div>
             </header>
 
             <div className="gov-broadsheet-columns">
-              {/* Main Feature Column (65% width): 3-4 Paragraphs, Resident Quote, Winners/Losers, Crises & Hearings */}
+              {/* Main Feature Column (65% width): 3-4 Paragraphs, Resident Quote, Winners/Losers, Crises & Spotlight */}
               <div className="gov-broadsheet-main-col">
                 {/* Section A: Last Month's Fallout (3-4 Detailed Paragraphs) */}
                 <section className="gov-broadsheet-editorial-section">
@@ -360,7 +380,12 @@ export const CenterBroadsheetDesk: React.FC = () => {
                   </h2>
                   <div className="gov-broadsheet-prose">
                     {falloutParas.map((para, idx) => (
-                      <p key={`fallout-${idx}`}>{para}</p>
+                      <p
+                        key={`fallout-${idx}`}
+                        className={idx === 0 ? "gov-broadsheet-dropcap" : ""}
+                      >
+                        {para}
+                      </p>
                     ))}
                   </div>
                   {broadsheet.residentQuote && (
@@ -402,7 +427,7 @@ export const CenterBroadsheetDesk: React.FC = () => {
                   </div>
                 </div>
 
-                {/* Section B: This Month's Developing Crises (2 Detailed Paragraphs) */}
+                {/* Section B: This Month's Developing Crises (2-3 Satirical Paragraphs + Interactive Docket Spotlight) */}
                 <section className="gov-broadsheet-editorial-section is-crises">
                   <h2 className="gov-broadsheet-section-heading">
                     THIS MONTH’S DEVELOPING CRISES
@@ -411,6 +436,51 @@ export const CenterBroadsheetDesk: React.FC = () => {
                     {crisesParas.map((para, idx) => (
                       <p key={`crises-${idx}`}>{para}</p>
                     ))}
+                  </div>
+
+                  {/* Interactive 2x2 Docket Spotlight Grid */}
+                  <div className="gov-broadsheet-spotlight-wrap">
+                    <div
+                      className="gov-eyebrow"
+                      style={{ marginBottom: "6px", color: "#1E3A5F" }}
+                    >
+                      DOCKET SPOTLIGHT: {monthlyDocket.length} ISSUES ON THIS
+                      MONTH’S BALLOT
+                    </div>
+                    <div className="gov-broadsheet-spotlight-grid">
+                      {monthlyDocket.map((issue) => (
+                        <div
+                          key={`spotlight-${issue.id}`}
+                          className="gov-broadsheet-spotlight-card"
+                        >
+                          <div className="gov-docket-stance-row">
+                            <span className="gov-badge gov-badge-cyan">
+                              {PILLAR_LABELS[issue.pillar]}
+                            </span>
+                            <span
+                              className={`gov-badge ${
+                                issue.status === "RESOLVED"
+                                  ? "gov-badge-emerald"
+                                  : "gov-badge-amber"
+                              }`}
+                            >
+                              {issue.status}
+                            </span>
+                          </div>
+                          <strong>{issue.title}</strong>
+                          <p>{issue.briefing}</p>
+                          <button
+                            type="button"
+                            className="gov-btn-micro gov-text-cyan"
+                            onClick={() =>
+                              handleSelectIssue(issue.id, issue.pillar)
+                            }
+                          >
+                            READ &amp; VOTE &rarr;
+                          </button>
+                        </div>
+                      ))}
+                    </div>
                   </div>
                 </section>
 
@@ -528,6 +598,52 @@ export const CenterBroadsheetDesk: React.FC = () => {
                     ON THE HORIZON // COMPTROLLER WARNING
                   </div>
                   <p>{broadsheet.onTheHorizonWarning}</p>
+                </div>
+
+                {/* City Hall Whispers & Rumor Mill */}
+                {broadsheet.cityHallGossip &&
+                  broadsheet.cityHallGossip.length > 0 && (
+                    <div className="gov-broadsheet-gossip-box">
+                      <div className="gov-eyebrow">
+                        CITY HALL WHISPERS &amp; RUMOR MILL
+                      </div>
+                      <ul>
+                        {broadsheet.cityHallGossip.map((g, gIdx) => (
+                          <li key={gIdx}>{g}</li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+
+                {/* 4-Bloc Voter Sentiment Pulse Mini-Card */}
+                <div className="gov-broadsheet-numbers-box">
+                  <div className="gov-eyebrow">VOTER SENTIMENT PULSE</div>
+                  <div className="gov-broadsheet-voter-pulse">
+                    <div>
+                      <span>Working Class</span>
+                      <strong>
+                        {Math.round(demographics.working_class.approval)}%
+                      </strong>
+                    </div>
+                    <div>
+                      <span>Wealthy</span>
+                      <strong>
+                        {Math.round(demographics.wealthy.approval)}%
+                      </strong>
+                    </div>
+                    <div>
+                      <span>Business</span>
+                      <strong>
+                        {Math.round(demographics.business.approval)}%
+                      </strong>
+                    </div>
+                    <div>
+                      <span>Green Coalition</span>
+                      <strong>
+                        {Math.round(demographics.environmentalists.approval)}%
+                      </strong>
+                    </div>
+                  </div>
                 </div>
               </aside>
             </div>

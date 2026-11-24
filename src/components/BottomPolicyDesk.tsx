@@ -1,8 +1,8 @@
 // ============================================================================
-// GOVERNOR — Step 4: Bottom Policy Desk & "Advance Month" Command Deck
-// Includes the Heatmap Layer Selector, the AI Custom Policy Drafting Terminal
-// (connected to the 3-strike clamped WebLLM pipeline), WebGPU status telemetry,
-// and the "NEXT MONTH" turn execution button.
+// ARMCHAIR MAYOR — Phase 4 Sleek Floating 3-Zone Command Footer
+// 1. Left Zone: 6 Compact Pillar Gauges (Crime, Pollution, Housing, Traffic, Edu, Health)
+// 2. Center Zone: Mayoral Actions (⚡ EXECUTIVE ORDER modal trigger, Town Hall, Public Address)
+// 3. Right Zone: ADVANCE MONTH → primary turn execution button
 // ============================================================================
 
 import React, { useEffect, useState } from "react";
@@ -27,14 +27,15 @@ import {
   webLLMService,
   WebLLMStatus,
 } from "../services/webllmService";
+import { soundEffects } from "../services/soundEffects";
 
-const PILLAR_LABELS: Record<CivicPillar, string> = {
-  crime: "CRIME",
-  pollution: "POLLUTION",
-  land_value: "HOUSING",
-  traffic: "TRAFFIC",
-  education: "EDUCATION",
-  health: "HEALTH",
+const PILLAR_LABELS: Record<CivicPillar, { short: string; icon: string }> = {
+  crime: { short: "CRIME", icon: "🚨" },
+  pollution: { short: "POLLUTION", icon: "🌫️" },
+  land_value: { short: "HOUSING", icon: "🏠" },
+  traffic: { short: "TRANSIT", icon: "🚋" },
+  education: { short: "EDUCATION", icon: "📚" },
+  health: { short: "HEALTH", icon: "🏥" },
 };
 
 export const BottomPolicyDesk: React.FC = () => {
@@ -52,13 +53,12 @@ export const BottomPolicyDesk: React.FC = () => {
   );
   const holdPublicAddress = useGameStore((s) => s.holdPublicAddress);
   const monthlyDocket = useGameStore((s) => s.monthlyDocket);
-  const isGeneratingDocket = useGameStore((s) => s.isGeneratingDocket);
   const setCenterDeskTab = useGameStore((s) => s.setCenterDeskTab);
-  const setShowCityReportModal = useGameStore((s) => s.setShowCityReportModal);
   const townHallUsedThisTurn = useGameStore((s) => s.townHall.usedThisTurn);
   const openTownHallSession = useGameStore((s) => s.openTownHallSession);
   const setTownHallQuestions = useGameStore((s) => s.setTownHallQuestions);
 
+  const [showEOModal, setShowEOModal] = useState(false);
   const [policyInput, setPolicyInput] = useState("");
   const [isCompilingPolicy, setIsCompilingPolicy] = useState(false);
   const [isStressTesting, setIsStressTesting] = useState(false);
@@ -79,7 +79,7 @@ export const BottomPolicyDesk: React.FC = () => {
     }
 
     setIsCompilingPolicy(true);
-    setLastCompilerNote("Compiling policy via Guardrail Clamping Pipeline...");
+    setLastCompilerNote("Compiling unilateral decree via Guardrail Pipeline...");
 
     try {
       const currentState = useGameStore.getState();
@@ -100,6 +100,7 @@ export const BottomPolicyDesk: React.FC = () => {
         }$${result.policy.budget_impact.monthly_change.toLocaleString()}/mo)`
       );
       setPolicyInput("");
+      setShowEOModal(false);
     } catch (err) {
       setLastCompilerNote(
         `Guardrail Error: ${err instanceof Error ? err.message : String(err)}`
@@ -125,30 +126,17 @@ export const BottomPolicyDesk: React.FC = () => {
 
   const handleHoldTownHall = async () => {
     if (townHallUsedThisTurn || isTurnPausedForCrisis || gameOverReason) return;
+    soundEffects.playUiClick();
     openTownHallSession();
     const qs = await generateTownHallQuestions(useGameStore.getState());
     setTownHallQuestions(qs);
   };
 
   return (
-    <footer className="gov-bottom-desk">
-      {/* 1. City Pillars & Docket Focus Strip */}
-      <div className="gov-desk-heatmap-group">
-        <div className="gov-desk-left-top">
-          <span className="gov-eyebrow">
-            {isGeneratingDocket
-              ? "⚡ DRAFTING NEXT MONTH'S DOCKET..."
-              : "CITY PILLARS & DOCKET FOCUS"}
-          </span>
-          <button
-            type="button"
-            className="gov-btn-micro gov-text-cyan"
-            onClick={() => setShowCityReportModal(true)}
-          >
-            STATE OF THE CITY
-          </button>
-        </div>
-        <div className="gov-heatmap-btn-row">
+    <>
+      <footer className="gov-bottom-desk">
+        {/* 1. Left Zone: 6 Compact Pillar Gauges */}
+        <div className="gov-footer-pillars-zone">
           {VALID_CIVIC_PILLARS.map((metric) => {
             const avg =
               metric === "education"
@@ -156,69 +144,107 @@ export const BottomPolicyDesk: React.FC = () => {
                 : metric === "health"
                 ? civicServices?.health ?? 55
                 : globalAverages[metric];
-            const isActive = activeDocketPillar === metric;
             const docketIssue = monthlyDocket.find((d) => d.pillar === metric);
+            const hasActiveIssue = Boolean(docketIssue);
+            const isActive = hasActiveIssue && activeDocketPillar === metric;
             const isResolved = docketIssue?.status === "RESOLVED";
-            const isFollowUp = docketIssue?.isFollowUpArc;
+            const meta = PILLAR_LABELS[metric];
 
             return (
-              <div key={metric} className="gov-layer-docket-col">
-                <button
-                  type="button"
-                  className={`gov-layer-btn ${isActive ? "active" : ""}`}
-                  onClick={() => {
-                    if (
-                      (VALID_HEATMAP_METRICS as readonly string[]).includes(
-                        metric
-                      )
-                    ) {
-                      setActiveHeatmapLayer(metric as HeatmapMetric);
-                    }
-                    setCenterDeskTab("docket", metric);
-                  }}
-                >
-                  <span className="gov-layer-name">{PILLAR_LABELS[metric]}</span>
-                  <span className="gov-layer-val">{Math.round(avg)}</span>
-                </button>
-                <button
-                  type="button"
-                  className={`gov-docket-mini-pill ${
-                    isResolved
-                      ? "resolved"
-                      : isFollowUp
-                      ? "followup"
-                      : "pending"
-                  }`}
-                  title={
-                    docketIssue
-                      ? `Focus ${metric.toUpperCase()} Docket Issue: "${
-                          docketIssue.title
-                        }" (${
-                          isFollowUp ? "FOLLOW-UP ARC | " : ""
-                        }${docketIssue.status})`
-                      : "Open Legislative Docket"
+              <button
+                key={metric}
+                type="button"
+                className={`gov-pillar-gauge-pill ${isActive ? "active" : ""}`}
+                title={
+                  docketIssue
+                    ? `${meta.short}: ${Math.round(avg)}/100 — Active Docket Issue: "${docketIssue.title}" (${docketIssue.status})`
+                    : `${meta.short}: ${Math.round(avg)}/100 — Quiet this month (4 of 6 pillars active per turn)`
+                }
+                onClick={() => {
+                  if (
+                    (VALID_HEATMAP_METRICS as readonly string[]).includes(
+                      metric
+                    )
+                  ) {
+                    setActiveHeatmapLayer(metric as HeatmapMetric);
                   }
-                  onClick={() => setCenterDeskTab("docket", metric)}
-                >
-                  {isResolved
-                    ? "✓ RESOLVED"
-                    : isFollowUp
-                    ? "★ FOLLOW-UP"
-                    : "● ISSUE"}
-                </button>
-              </div>
+                  if (docketIssue) {
+                    soundEffects.playUiClick();
+                    setCenterDeskTab("docket", metric);
+                  }
+                }}
+              >
+                <div className="gov-pillar-gauge-top">
+                  <span>
+                    {meta.icon} {meta.short}
+                  </span>
+                  {docketIssue && (
+                    <span
+                      className={`gov-pillar-dot ${
+                        isResolved ? "is-resolved" : "is-pending"
+                      }`}
+                      aria-hidden="true"
+                    />
+                  )}
+                </div>
+                <strong className="gov-num">{Math.round(avg)}</strong>
+              </button>
             );
           })}
         </div>
-      </div>
 
-      {/* 2. AI Custom Policy Drafting Terminal ("Custom Executive Order") */}
-      <form className="gov-policy-terminal" onSubmit={handleEnactPolicy}>
-        <div className="gov-terminal-top">
-          <span className="gov-eyebrow">
-            EXECUTIVE ORDER BYPASS ({EXECUTIVE_ORDER_CAPITAL_COST} CAP | IMMEDIATE BYPASS: -5% APPROVAL &amp; AUTHORITARIAN SHIFT)
-          </span>
-          <div className="gov-webllm-status">
+        {/* 2. Center Zone: Clean Mayoral Actions + WebGPU Status */}
+        <div className="gov-footer-actions-zone">
+          <button
+            type="button"
+            className="gov-btn-enact"
+            disabled={isTurnPausedForCrisis || Boolean(gameOverReason)}
+            title="Immediate Bypass (High Backlash): Enact any custom decree immediately for 25 Capital, inflicting -5% Approval & Authoritarian shift"
+            onClick={() => {
+              soundEffects.playUiClick();
+              setShowEOModal(true);
+            }}
+          >
+            ⚡ EXECUTIVE ORDER (-{EXECUTIVE_ORDER_CAPITAL_COST} CAP)
+          </button>
+
+          <button
+            type="button"
+            className="gov-btn-civic-teal"
+            disabled={
+              townHallUsedThisTurn ||
+              isTurnPausedForCrisis ||
+              Boolean(gameOverReason)
+            }
+            title="Convene a live Press & Citizen Town Hall Q&A (1/month) to win Approval & Political Capital"
+            onClick={() => void handleHoldTownHall()}
+          >
+            {townHallUsedThisTurn ? "🎙️ TOWN HALL HELD" : "🎙️ HOLD TOWN HALL"}
+          </button>
+
+          <button
+            type="button"
+            className="gov-btn-civic-teal"
+            disabled={
+              publicAddressUsedThisTurn ||
+              reserves < PUBLIC_ADDRESS_TREASURY_COST ||
+              isTurnPausedForCrisis ||
+              Boolean(gameOverReason)
+            }
+            title={`Spend $${(PUBLIC_ADDRESS_TREASURY_COST / 1000).toFixed(
+              0
+            )}K from Treasury on a city-wide address to immediately gain +${PUBLIC_ADDRESS_CAPITAL_GAIN} Political Capital`}
+            onClick={() => {
+              soundEffects.playUiClick();
+              holdPublicAddress();
+            }}
+          >
+            {publicAddressUsedThisTurn
+              ? "📢 PR BLITZ USED"
+              : `📢 PUBLIC ADDRESS (+${PUBLIC_ADDRESS_CAPITAL_GAIN} CAP | -$250K)`}
+          </button>
+
+          <div className="gov-footer-llm-pill">
             <span
               className={`gov-status-dot ${
                 llmStatus.isReady
@@ -235,139 +261,132 @@ export const BottomPolicyDesk: React.FC = () => {
                 className="gov-btn-micro"
                 onClick={() => void webLLMService.initializeEngine()}
               >
-                LOAD WEBGPU LLM
+                LOAD AI
               </button>
             )}
           </div>
         </div>
 
-        <div className="gov-terminal-input-row">
-          <input
-            type="text"
-            className="gov-policy-input"
-            placeholder='Enter Custom Executive Order (e.g., "Mandate rooftop solar & electric freight lanes")...'
-            value={policyInput}
-            maxLength={140}
-            disabled={isCompilingPolicy || isTurnPausedForCrisis || Boolean(gameOverReason)}
-            onChange={(e) => setPolicyInput(e.target.value)}
-          />
+        {/* 3. Right Zone: ADVANCE MONTH → Primary Action */}
+        <div className="gov-turn-action-box">
           <button
             type="button"
-            className="gov-btn-stress-test"
+            className={`gov-btn-next-month ${
+              isTurnPausedForCrisis ? "paused" : ""
+            }`}
             disabled={
-              !policyInput.trim() ||
-              isStressTesting ||
-              isCompilingPolicy ||
-              isTurnPausedForCrisis ||
-              Boolean(gameOverReason)
+              isTurnPausedForCrisis || Boolean(gameOverReason) || isCompilingPolicy
             }
-            title="Run Policy Devil's Advocate to preview how citizens or businesses will game this wording before signing"
-            onClick={() => void handleStressTestPolicy()}
+            onClick={() => void advanceTurn()}
           >
-            {isStressTesting ? "AUDITING..." : "STRESS-TEST POLICY"}
-          </button>
-
-          <button
-            type="submit"
-            className="gov-btn-enact"
-            title={
-              politicalCapital < EXECUTIVE_ORDER_CAPITAL_COST
-                ? `Immediate Bypass (High Backlash): Requires ${EXECUTIVE_ORDER_CAPITAL_COST} Capital (${Math.round(
-                    politicalCapital
-                  )}/100 available). Inflicts -5% Approval backlash & Authoritarian shift.`
-                : `Immediate Bypass (High Backlash): Enacts immediately this turn for ${EXECUTIVE_ORDER_CAPITAL_COST} Capital, inflicting -5% Approval & Authoritarian shift. Use Sponsor Custom Bill (10 Cap) in Docket for public debate!`
-            }
-            disabled={
-              !policyInput.trim() ||
-              isCompilingPolicy ||
-              isTurnPausedForCrisis ||
-              Boolean(gameOverReason) ||
-              politicalCapital < EXECUTIVE_ORDER_CAPITAL_COST
-            }
-          >
-            {isCompilingPolicy
-              ? "CLAMPING..."
-              : `SIGN EXECUTIVE ORDER (-${EXECUTIVE_ORDER_CAPITAL_COST} CAPITAL)`}
-          </button>
-
-          <button
-            type="button"
-            className="gov-btn-civic-teal"
-            disabled={
-              townHallUsedThisTurn ||
-              isTurnPausedForCrisis ||
-              Boolean(gameOverReason)
-            }
-            title={
-              townHallUsedThisTurn
-                ? "Town Hall Q&A already held this month."
-                : "Convene a live Press & Citizen Town Hall Q&A (1/month) to win Approval & Political Capital"
-            }
-            onClick={() => void handleHoldTownHall()}
-          >
-            {townHallUsedThisTurn ? "TOWN HALL HELD" : "HOLD TOWN HALL"}
-          </button>
-
-          {/* Active "PUBLIC ADDRESS (+20 CAPITAL)" Button (Spends $250K Treasury once per month) */}
-          <button
-            type="button"
-            className="gov-btn-civic-teal"
-            disabled={
-              publicAddressUsedThisTurn ||
-              reserves < PUBLIC_ADDRESS_TREASURY_COST ||
-              isTurnPausedForCrisis ||
-              Boolean(gameOverReason)
-            }
-            title={
-              publicAddressUsedThisTurn
-                ? "Public Address already broadcast this month (resets next month)."
-                : reserves < PUBLIC_ADDRESS_TREASURY_COST
-                ? `Requires $${(
-                    PUBLIC_ADDRESS_TREASURY_COST / 1000
-                  ).toFixed(0)}K in Treasury Reserves.`
-                : `Spend $${(
-                    PUBLIC_ADDRESS_TREASURY_COST / 1000
-                  ).toFixed(
-                    0
-                  )}K from Treasury on a city-wide media/PR address to immediately gain +${PUBLIC_ADDRESS_CAPITAL_GAIN} Political Capital (1/month).`
-            }
-            onClick={holdPublicAddress}
-          >
-            {publicAddressUsedThisTurn
-              ? "PR BLITZ USED"
-              : `PUBLIC ADDRESS (+${PUBLIC_ADDRESS_CAPITAL_GAIN} CAPITAL | -$250K)`}
+            <span className="gov-next-main">
+              {isTurnPausedForCrisis
+                ? "SIMULATION PAUSED"
+                : gameOverReason
+                ? "TERM CONCLUDED"
+                : "ADVANCE MONTH →"}
+            </span>
+            <span className="gov-next-sub">
+              {isTurnPausedForCrisis
+                ? "Resolve Boiling Point Crisis"
+                : "Simulate & Print Next Issue"}
+            </span>
           </button>
         </div>
+      </footer>
 
-        {lastCompilerNote && (
-          <div className="gov-compiler-note">{lastCompilerNote}</div>
-        )}
-      </form>
-
-      {/* 3. Turn Execution ("ADVANCE MONTH") Button */}
-      <div className="gov-turn-action-box">
-        <button
-          type="button"
-          className={`gov-btn-next-month ${
-            isTurnPausedForCrisis ? "paused" : ""
-          }`}
-          disabled={isTurnPausedForCrisis || Boolean(gameOverReason) || isCompilingPolicy}
-          onClick={advanceTurn}
+      {/* Executive Order Popover Modal */}
+      {showEOModal && (
+        <div
+          className="gov-modal-backdrop"
+          role="dialog"
+          aria-modal="true"
+          aria-label="Unilateral Executive Order Bypass"
         >
-          <span className="gov-next-main">
-            {isTurnPausedForCrisis
-              ? "SIMULATION PAUSED"
-              : gameOverReason
-              ? "TERM CONCLUDED"
-              : "ADVANCE MONTH"}
-          </span>
-          <span className="gov-next-sub">
-            {isTurnPausedForCrisis
-              ? "Resolve Boiling Point Crisis"
-              : "Next Turn (+1 Month)"}
-          </span>
-        </button>
-      </div>
-    </footer>
+          <div className="gov-modal-card gov-eo-popover-card">
+            <div className="gov-modal-header">
+              <div>
+                <div className="gov-modal-eyebrow gov-text-crimson">
+                  UNILATERAL BYPASS // HIGH INSTITUTIONAL BACKLASH
+                </div>
+                <h2 className="gov-modal-title">SIGN EXECUTIVE ORDER</h2>
+              </div>
+              <button
+                type="button"
+                className="gov-btn-ghost"
+                onClick={() => setShowEOModal(false)}
+              >
+                CLOSE
+              </button>
+            </div>
+
+            <p className="gov-modal-desc">
+              Bypasses the Legislative Docket and enacts your custom decree
+              immediately this month. Costs{" "}
+              <strong>{EXECUTIVE_ORDER_CAPITAL_COST} Political Capital</strong>{" "}
+              (available: <strong>{Math.round(politicalCapital)}/100</strong>),
+              inflicts <strong>-5% Institutional Backlash Approval</strong>, and
+              pushes your Political Compass toward Authoritarian. For zero
+              backlash, use{" "}
+              <strong>+ Sponsor Custom Bill (10 Cap)</strong> inside the
+              Legislative Docket.
+            </p>
+
+            <form
+              className="gov-policy-terminal"
+              onSubmit={handleEnactPolicy}
+              style={{ gap: "10px" }}
+            >
+              <input
+                type="text"
+                className="gov-policy-input"
+                placeholder='Draft unilateral Executive Order (e.g., "Mandate rooftop solar & electric freight lanes")...'
+                value={policyInput}
+                maxLength={140}
+                disabled={isCompilingPolicy}
+                onChange={(e) => setPolicyInput(e.target.value)}
+              />
+
+              <div
+                style={{
+                  display: "flex",
+                  gap: "10px",
+                  justifyContent: "flex-end",
+                  flexWrap: "wrap",
+                }}
+              >
+                <button
+                  type="button"
+                  className="gov-btn-stress-test"
+                  disabled={
+                    !policyInput.trim() || isStressTesting || isCompilingPolicy
+                  }
+                  onClick={() => void handleStressTestPolicy()}
+                >
+                  {isStressTesting ? "AUDITING..." : "STRESS-TEST POLICY"}
+                </button>
+                <button
+                  type="submit"
+                  className="gov-btn-enact"
+                  disabled={
+                    !policyInput.trim() ||
+                    isCompilingPolicy ||
+                    politicalCapital < EXECUTIVE_ORDER_CAPITAL_COST
+                  }
+                >
+                  {isCompilingPolicy
+                    ? "CLAMPING DECREE..."
+                    : `SIGN EXECUTIVE ORDER (-${EXECUTIVE_ORDER_CAPITAL_COST} CAP)`}
+                </button>
+              </div>
+
+              {lastCompilerNote && (
+                <div className="gov-compiler-note">{lastCompilerNote}</div>
+              )}
+            </form>
+          </div>
+        </div>
+      )}
+    </>
   );
 };

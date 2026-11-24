@@ -1535,7 +1535,7 @@ const EDUCATION_DOCKET_POOL: RawIssueTemplate[] = [
     templateId: "edu-1",
     title: "Trade Academies vs. Tablet Laptops",
     briefing:
-      "District high schools face overflowing shop classes while tech vendors lobby for mandatory tablet subscriptions.",
+      "District high schools are bursting at the seams as shop teachers convert broom closets into makeshift welding bays while tech lobbyists wine and dine the procurement board over six-figure tablet contracts. Working-class families insist practical apprenticeships offer their kids immediate debt-free wages in construction and green manufacturing. Meanwhile, software startups warn that denying students cloud-connected tablets will leave the next workforce unprepared for high-tech employers downtown. Caught between union stewards and Silicon boosters, the school board is deadlocked until City Hall picks a direction.",
     presets: [
       {
         stanceLabel: "Vocational Trade Guilds",
@@ -1602,7 +1602,7 @@ const EDUCATION_DOCKET_POOL: RawIssueTemplate[] = [
     templateId: "edu-2",
     title: "Overcrowded Elementary Wings",
     briefing:
-      "Baby-boom enrollment has forced three elementary schools into drafty parking-lot trailers.",
+      "A surprise surge in young families moving into mid-rise wards has overwhelmed three neighborhood elementary schools, forcing fourth graders into drafty parking-lot trailers with flickering space heaters. Parents have staged morning stroller pickets outside City Hall demanding permanent timber-frame classroom wings and universal pre-K staffing. Fiscal hawks on the council balk at construction bonds and push staggered morning/afternoon shifts instead, while affluent homeowners threaten litigation if catchment boundaries are redrawn. With rainy season approaching, the PTA wants a signed plan before Monday bell.",
     presets: [
       {
         stanceLabel: "Universal Pre-K & Wings",
@@ -1674,7 +1674,7 @@ const HEALTH_DOCKET_POOL: RawIssueTemplate[] = [
     templateId: "health-1",
     title: "ER Bottleneck & Walk-In Clinics",
     briefing:
-      "Downtown emergency rooms are jammed with routine flu cases while outer wards lack late-night urgent care.",
+      "Downtown hospital emergency rooms have turned into six-hour waiting purgatories packed with routine fevers, sprained ankles, and chronic prescription refills because outer neighborhoods lack late-night urgent care. Exhausted triage nurses warn that ambulance diversion times are slipping into dangerous territory during evening rush hour. Labor advocates are clamoring for six city-staffed neighborhood walk-in clinics, whereas private hospital chains are offering to add beds if City Hall signs generous corporate tax rebates. Every day of delay leaves working families either rationing care or clogging ambulance bays.",
     presets: [
       {
         stanceLabel: "Neighborhood Walk-In Clinics",
@@ -1738,7 +1738,7 @@ const HEALTH_DOCKET_POOL: RawIssueTemplate[] = [
     templateId: "health-2",
     title: "Mental Health & Street Outreach",
     briefing:
-      "First responders report 40% of night calls involve untreated mental-health crises rather than violent crime.",
+      "Night-shift dispatch logs reveal that nearly two in five non-violent emergency calls downtown stem from untreated behavioral health crises, yet police cruisers remain the city's only after-hours response unit. Paramedic unions and social-work coalitions say unarmed street crisis teams could de-escalate episodes before anyone lands in handcuffs or hospital restraints. At the same time, downtown boutique owners and luxury condo boards are pressuring precincts for stricter plaza sweeps to clear storefronts before morning commuters arrive. Your decision will define whether City Hall treats street vulnerability as a medical crisis or a policing problem.",
     presets: [
       {
         stanceLabel: "Unarmed Crisis Medics",
@@ -1849,7 +1849,7 @@ function buildSequelFollowUpIssueForLaw(
   > = {
     crime: {
       title: `Aftermath of "${lawName}": Compliance Backlash & Enforcement Gap`,
-      briefing: `Following your enactment of "${lawName}", precinct commanders report a new secondary flashpoint: ${fallout}. Critics demand immediate amendments while hardliners want enforcement doubled down.`,
+      briefing: `Following your enactment of "${lawName}", precinct commanders report a sharp secondary flashpoint across outer wards: ${fallout}. Street-level enforcement patrols complain that ambiguous wording has emboldened midnight workarounds while civil-rights monitors document uneven stops on corner blocks. Hardliners on the council want aggressive compliance sweeps to restore order immediately, whereas neighborhood organizers demand an independent relief board to carve out hardship waivers.`,
       presets: [
         {
           stanceLabel: "Hardline Enforcement",
@@ -1909,7 +1909,7 @@ function buildSequelFollowUpIssueForLaw(
     },
     pollution: {
       title: `Sequel to "${lawName}": Industrial Retrofit & Audit Dispute`,
-      briefing: `Two months into "${lawName}", environmental inspectors flag a new complication: ${fallout}. Small manufacturers warn of bankruptcy without relief, while green activists demand zero exemptions.`,
+      briefing: `With "${lawName}" now the law of the land, environmental inspectors along the riverfront have uncovered an urgent operational tangle: ${fallout}. Family-owned machine shops and dry cleaners warn they will have to shutter or flee across county lines unless City Hall provides affordable retrofit financing. Meanwhile, environmental coalitions are camping outside the permitting office with air-quality monitors, insisting that granting corporate loopholes now would gut the entire ordinance.`,
       presets: [
         {
           stanceLabel: "Zero-Exemption EPA",
@@ -1970,7 +1970,7 @@ function buildSequelFollowUpIssueForLaw(
     },
     land_value: {
       title: `Ripple Effect of "${lawName}": Property Assessment & Zoning Appeal`,
-      briefing: `Your passage of "${lawName}" triggered rapid market shifts across adjacent wards: ${fallout}. Commercial landlords and neighborhood associations have filed competing zoning appeals.`,
+      briefing: `Your passage of "${lawName}" set off a speculative wave across mid-rise neighborhoods, producing an unexpected spillover: ${fallout}. Commercial brokers are rushing to file dozens of adjacent variance petitions, driving up ground leases and forcing longtime diners to ponder relocation. Tenant unions and neighborhood historians are now packing zoning hearings to demand tax freezes or windfall impact fees before rents lock out local workers.`,
       presets: [
         {
           stanceLabel: "Pro-Development Fast-Track",
@@ -2031,7 +2031,7 @@ function buildSequelFollowUpIssueForLaw(
     },
     traffic: {
       title: `Bottleneck After "${lawName}": Commuter & Freight Rerouting Clash`,
-      briefing: `Traffic engineers report that "${lawName}" has reshaped daily commuter flows, causing a new dispute: ${fallout}. Freight dispatchers and transit riders are demanding phase-two adjustments.`,
+      briefing: `Traffic engineers tracking morning rush hour report that "${lawName}" unexpectedly shoved delivery vans and ride-share fleets onto narrow residential side streets, sparking a new headache: ${fallout}. Porch-sitting residents are furious over rumbling box trucks shaking breakfast dishes, while warehouse dispatchers warn that tighter restrictions without bypass lanes will delay grocery restocks. Both bus riders and small couriers are pressing City Hall for concrete phase-two relief.`,
       presets: [
         {
           stanceLabel: "Rapid Transit Priority",
@@ -2091,7 +2091,7 @@ function buildSequelFollowUpIssueForLaw(
     },
     education: {
       title: `Post-${lawName.slice(0, 20)} School & Workforce Ripple`,
-      briefing: `Following "${lawName}", district teachers and parent unions are demanding updated resources to handle shifting enrollment and skills demand.`,
+      briefing: `In the wake of "${lawName}", district principals and parent unions report a wave of unexpected knock-on demands inside local classrooms: ${fallout}. Vocational instructors say incoming students need updated tools and extended evening lab hours before they can qualify for new municipal standards. Fiscal conservatives on the board are reluctant to authorize fresh recurring school stipends unless local employers help shoulder the training bill.`,
       presets: [
         {
           stanceLabel: "Teacher Retention Grant",
@@ -2139,7 +2139,7 @@ function buildSequelFollowUpIssueForLaw(
     },
     health: {
       title: `Post-${lawName.slice(0, 20)} Clinic & Welfare Strain`,
-      briefing: `Following "${lawName}", neighborhood clinics report new patient bottlenecks and are calling for targeted public-health follow-up.`,
+      briefing: `Following "${lawName}", public-health directors report shifting patient traffic and fresh compliance questions at neighborhood clinics: ${fallout}. Exhausted nurses say evening walk-in demand is stretching intake staff thin, while hospital administrators warn that unclear billing rules could squeeze clinic budgets by quarter's end. Both patient advocates and fiscal watchdogs want targeted follow-up before waiting rooms overflow.`,
       presets: [
         {
           stanceLabel: "Expand Clinic Hours",

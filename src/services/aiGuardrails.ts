@@ -216,11 +216,100 @@ export function sanitizeAndExtractJsonObject(rawOutput: string): string {
 
   // 1. Strip illegal trailing commas before closing braces/brackets: e.g. `{"a": 1,}` -> `{"a": 1}`
   candidate = candidate.replace(/,\s*([}\]])/g, "$1");
-  // 2. Strip illegal leading `+` on positive numbers in JSON: e.g. `"change": +10` -> `"change": 10`
+  // 2. Replace Python literals (None, True, False) when used as JSON values
+  candidate = candidate.replace(/([:,\[]\s*)None\b/g, "$1null");
+  candidate = candidate.replace(/([:,\[]\s*)True\b/g, "$1true");
+  candidate = candidate.replace(/([:,\[]\s*)False\b/g, "$1false");
+  // 3. Strip illegal leading `+` on positive numbers in JSON: e.g. `"change": +10` -> `"change": 10`
   candidate = candidate.replace(/([:,\[]\s*)\+(\d)/g, "$1$2");
-  // 3. Quote unquoted JS-style object keys right after `{` or `,`: e.g. `{ change: 5 }` -> `{ "change": 5 }`
+  // 4. Quote unquoted JS-style object keys right after `{` or `,`: e.g. `{ change: 5 }` -> `{ "change": 5 }`
   candidate = candidate.replace(/([{,]\s*)([a-zA-Z_][a-zA-Z0-9_]*)\s*:/g, '$1"$2":');
-  return candidate;
+  // 5. Insert missing commas between adjacent JSON elements separated by newlines/whitespace
+  candidate = candidate.replace(/([}\]0-9]|true|false|null)\s*\n\s*(?=")/g, "$1,\n");
+  candidate = candidate.replace(/"\s*\n\s*(?="[^"]+"\s*:)/g, '",\n');
+  candidate = candidate.replace(/\}\s*\{/g, "},{");
+
+  // 6. Fast-path parse check; if still invalid due to unescaped inner quotes or comments, run repair pass
+  try {
+    JSON.parse(candidate);
+    return candidate;
+  } catch {
+    return repairInnerQuotesAndComments(candidate);
+  }
+}
+
+function repairInnerQuotesAndComments(src: string): string {
+  let out = "";
+  let inString = false;
+  let escapeNext = false;
+
+  for (let i = 0; i < src.length; i++) {
+    const ch = src[i];
+    if (escapeNext) {
+      out += ch;
+      escapeNext = false;
+      continue;
+    }
+    if (ch === "\\" && inString) {
+      out += ch;
+      escapeNext = true;
+      continue;
+    }
+    if (!inString && ch === "/" && src[i + 1] === "/") {
+      // Skip // line comment outside string
+      while (i < src.length && src[i] !== "\n") i++;
+      out += "\n";
+      continue;
+    }
+    if (ch === '"') {
+      if (!inString) {
+        inString = true;
+        out += ch;
+      } else {
+        // Look ahead to next non-whitespace char to see if this legitimately closes the string
+        let j = i + 1;
+        while (j < src.length && /\s/.test(src[j])) j++;
+        const nextCh = src[j] ?? "";
+        if (
+          nextCh === "" ||
+          nextCh === ":" ||
+          nextCh === "," ||
+          nextCh === "}" ||
+          nextCh === "]"
+        ) {
+          inString = false;
+          out += ch;
+        } else {
+          // Unescaped quote inside prose string -> escape it
+          out += '\\"';
+        }
+      }
+      continue;
+    }
+    if (inString) {
+      if (ch === "\n") {
+        out += "\\n";
+        continue;
+      }
+      if (ch === "\r") {
+        continue;
+      }
+      if (ch === "\t") {
+        out += "\\t";
+        continue;
+      }
+    } else if (
+      ch.charCodeAt(0) < 32 &&
+      ch !== "\n" &&
+      ch !== "\r" &&
+      ch !== "\t"
+    ) {
+      continue;
+    }
+    out += ch;
+  }
+
+  return out.replace(/,\s*([}\]])/g, "$1");
 }
 
 // Preserve export alias used by crisisEngine.ts

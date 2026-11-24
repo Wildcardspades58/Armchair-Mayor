@@ -825,7 +825,7 @@ Return STRICTLY a valid raw JSON object matching this schema:
       "pillar": "${targetPillars.join('" | "')}",
       "domain_tag": "string",
       "title": "string (Fresh dilemma title)",
-      "briefing": "string (2-3 witty sentences)",
+      "briefing": "string (3-4 rich, satirical sentences explaining the history of the dilemma, the local factions clashing, how existing laws complicate it, and what is at stake)",
       "is_follow_up_arc": boolean,
       "parent_law_title": "string or null",
       "influenced_by_law": "string or null",
@@ -833,7 +833,7 @@ Return STRICTLY a valid raw JSON object matching this schema:
         {
           "stance_label": "string",
           "option_title": "string",
-          "description": "string (1 crisp sentence)",
+          "description": "string (1-2 clear sentences explaining how this option works and who bears the cost)",
           "policy_effect": {
             "policy_name": "string (Max 40 chars)",
             "vibe_feed_headline": "string (Max 80 chars)",
@@ -858,8 +858,19 @@ function parseAndClampAIDocketPayload(
   pastTitles: string[]
 ): MonthlyDocketIssue[] {
   const jsonStr = sanitizeAndExtractJsonObject(rawText);
-  const parsed = JSON.parse(jsonStr) as Record<string, unknown>;
-  const rawIssues = Array.isArray(parsed.issues) ? parsed.issues : [];
+  const parsed = JSON.parse(jsonStr) as unknown;
+  const parsedObj =
+    parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : {};
+  const rawIssuesCandidate = Array.isArray(parsed)
+    ? parsed
+    : parsedObj.issues ??
+      parsedObj.docket ??
+      parsedObj.docket_issues ??
+      parsedObj.monthly_docket ??
+      [];
+  const rawIssues = Array.isArray(rawIssuesCandidate) ? rawIssuesCandidate : [];
 
   if (rawIssues.length === 0) {
     throw new Error("AI Docket payload did not contain an 'issues' array.");
@@ -867,113 +878,120 @@ function parseAndClampAIDocketPayload(
 
   const pastLower = new Set(pastTitles.map((t) => t.toLowerCase().trim()));
   const balancedCapitalCosts: [number, number, number] = [15, -5, 0];
-  const validResults: MonthlyDocketIssue[] = [];
 
-  for (const item of rawIssues) {
-    if (!item || typeof item !== "object") continue;
-    const rec = item as Record<string, unknown>;
-    const pillar = normalizeCivicPillar(rec.pillar);
-    if (!pillar) continue;
+  const extractValidIssues = (allowSeenTitles: boolean): MonthlyDocketIssue[] => {
+    const results: MonthlyDocketIssue[] = [];
+    for (const item of rawIssues) {
+      if (!item || typeof item !== "object") continue;
+      const rec = item as Record<string, unknown>;
+      const pillar = normalizeCivicPillar(rec.pillar);
+      if (!pillar) continue;
 
-    const title =
-      typeof rec.title === "string" && rec.title.trim().length > 3
-        ? rec.title.trim().slice(0, 75)
-        : null;
-    const briefing =
-      typeof rec.briefing === "string" && rec.briefing.trim().length > 10
-        ? rec.briefing.trim().slice(0, 320)
-        : null;
+      const rawTitle =
+        typeof rec.title === "string" && rec.title.trim().length > 3
+          ? rec.title.trim().slice(0, 75)
+          : null;
+      const briefing =
+        typeof rec.briefing === "string" && rec.briefing.trim().length > 10
+          ? rec.briefing.trim().slice(0, 780)
+          : null;
 
-    if (!title || !briefing) continue;
-    // Enforce anti-repetition check against pastIssueTitles
-    if (pastLower.has(title.toLowerCase())) continue;
+      if (!rawTitle || !briefing) continue;
+      const isDuplicateTitle = pastLower.has(rawTitle.toLowerCase());
+      if (isDuplicateTitle && !allowSeenTitles) continue;
+      const title = isDuplicateTitle
+        ? `${rawTitle.slice(0, 62)} (Month ${turn})`
+        : rawTitle;
 
-    const rawPresets = Array.isArray(rec.presets)
-      ? rec.presets
-      : Array.isArray(rec.options)
-      ? rec.options
-      : Array.isArray(rec.choices)
-      ? rec.choices
-      : [];
-    if (rawPresets.length === 0) continue;
-    while (rawPresets.length < 3) {
-      rawPresets.push(rawPresets[rawPresets.length - 1]);
+      const rawPresets = Array.isArray(rec.presets)
+        ? rec.presets
+        : Array.isArray(rec.options)
+        ? rec.options
+        : Array.isArray(rec.choices)
+        ? rec.choices
+        : [];
+      if (rawPresets.length === 0) continue;
+      while (rawPresets.length < 3) {
+        rawPresets.push(rawPresets[rawPresets.length - 1]);
+      }
+
+      const clampedPresets = rawPresets.slice(0, 3).map((p, idx): DocketPresetOption => {
+        const pr = (p && typeof p === "object" ? p : {}) as Record<string, unknown>;
+        const stanceLabel =
+          typeof pr.stance_label === "string" && pr.stance_label.trim()
+            ? pr.stance_label.trim().slice(0, 32)
+            : `Stance #${idx + 1}`;
+        const optionTitle =
+          typeof pr.option_title === "string" && pr.option_title.trim()
+            ? pr.option_title.trim().slice(0, 55)
+            : `Execute Option #${idx + 1}`;
+        const description =
+          typeof pr.description === "string" && pr.description.trim()
+            ? pr.description.trim().slice(0, 280)
+            : optionTitle;
+
+        const rawEffectObj =
+          pr.policy_effect && typeof pr.policy_effect === "object"
+            ? pr.policy_effect
+            : {
+                policy_name: optionTitle.slice(0, 40),
+                vibe_feed_headline: `Mayor enacts "${optionTitle.slice(0, 40)}".`,
+                budget_impact: { monthly_change: -20000 },
+                heatmap_modifiers: [{ metric: pillar, change: pillar === "land_value" ? 8 : -10 }],
+                demographic_approval: [{ demographic: "working_class", change: 6 }],
+                unintended_consequence_trigger: "None",
+              };
+
+        return {
+          id: `docket-ai-${turn}-${pillar}-opt-${idx + 1}`,
+          stanceLabel,
+          optionTitle,
+          description,
+          capitalCost: balancedCapitalCosts[idx] ?? 0,
+          policyEffect: parseAndClampAIPolicyResponse(JSON.stringify(rawEffectObj)),
+        };
+      }) as [DocketPresetOption, DocketPresetOption, DocketPresetOption];
+
+      const isFollowUpArc = Boolean(rec.is_follow_up_arc);
+      const parentLawTitle =
+        typeof rec.parent_law_title === "string" &&
+        rec.parent_law_title.trim().length > 0 &&
+        rec.parent_law_title.trim().toLowerCase() !== "null"
+          ? rec.parent_law_title.trim().slice(0, 45)
+          : undefined;
+      const influencedByLawTitle =
+        typeof rec.influenced_by_law === "string" &&
+        rec.influenced_by_law.trim().length > 0 &&
+        rec.influenced_by_law.trim().toLowerCase() !== "null"
+          ? rec.influenced_by_law.trim().slice(0, 45)
+          : parentLawTitle;
+      const domainTag =
+        typeof rec.domain_tag === "string" &&
+        rec.domain_tag.trim().length > 0 &&
+        rec.domain_tag.trim().toLowerCase() !== "null"
+          ? rec.domain_tag.trim().slice(0, 40)
+          : undefined;
+
+      results.push({
+        id: `issue-${turn}-${pillar}`,
+        turn,
+        pillar,
+        title,
+        briefing,
+        status: "PENDING",
+        isFollowUpArc,
+        parentLawTitle,
+        influencedByLawTitle,
+        domainTag,
+        isAIGenerated: true,
+        presets: clampedPresets,
+      });
     }
+    return results;
+  };
 
-    const clampedPresets = rawPresets.slice(0, 3).map((p, idx): DocketPresetOption => {
-      const pr = (p && typeof p === "object" ? p : {}) as Record<string, unknown>;
-      const stanceLabel =
-        typeof pr.stance_label === "string" && pr.stance_label.trim()
-          ? pr.stance_label.trim().slice(0, 32)
-          : `Stance #${idx + 1}`;
-      const optionTitle =
-        typeof pr.option_title === "string" && pr.option_title.trim()
-          ? pr.option_title.trim().slice(0, 55)
-          : `Execute Option #${idx + 1}`;
-      const description =
-        typeof pr.description === "string" && pr.description.trim()
-          ? pr.description.trim().slice(0, 160)
-          : optionTitle;
-
-      const rawEffectObj =
-        pr.policy_effect && typeof pr.policy_effect === "object"
-          ? pr.policy_effect
-          : {
-              policy_name: optionTitle.slice(0, 40),
-              vibe_feed_headline: `Mayor enacts "${optionTitle.slice(0, 40)}".`,
-              budget_impact: { monthly_change: -20000 },
-              heatmap_modifiers: [{ metric: pillar, change: pillar === "land_value" ? 8 : -10 }],
-              demographic_approval: [{ demographic: "working_class", change: 6 }],
-              unintended_consequence_trigger: "None",
-            };
-
-      return {
-        id: `docket-ai-${turn}-${pillar}-opt-${idx + 1}`,
-        stanceLabel,
-        optionTitle,
-        description,
-        capitalCost: balancedCapitalCosts[idx] ?? 0,
-        policyEffect: parseAndClampAIPolicyResponse(JSON.stringify(rawEffectObj)),
-      };
-    }) as [DocketPresetOption, DocketPresetOption, DocketPresetOption];
-
-    const isFollowUpArc = Boolean(rec.is_follow_up_arc);
-    const parentLawTitle =
-      typeof rec.parent_law_title === "string" &&
-      rec.parent_law_title.trim().length > 0 &&
-      rec.parent_law_title.trim().toLowerCase() !== "null"
-        ? rec.parent_law_title.trim().slice(0, 45)
-        : undefined;
-    const influencedByLawTitle =
-      typeof rec.influenced_by_law === "string" &&
-      rec.influenced_by_law.trim().length > 0 &&
-      rec.influenced_by_law.trim().toLowerCase() !== "null"
-        ? rec.influenced_by_law.trim().slice(0, 45)
-        : parentLawTitle;
-    const domainTag =
-      typeof rec.domain_tag === "string" &&
-      rec.domain_tag.trim().length > 0 &&
-      rec.domain_tag.trim().toLowerCase() !== "null"
-        ? rec.domain_tag.trim().slice(0, 40)
-        : undefined;
-
-    validResults.push({
-      id: `issue-${turn}-${pillar}`,
-      turn,
-      pillar,
-      title,
-      briefing,
-      status: "PENDING",
-      isFollowUpArc,
-      parentLawTitle,
-      influencedByLawTitle,
-      domainTag,
-      isAIGenerated: true,
-      presets: clampedPresets,
-    });
-  }
-
-  return validResults;
+  const strictResults = extractValidIssues(false);
+  return strictResults.length > 0 ? strictResults : extractValidIssues(true);
 }
 
 /**
@@ -1030,7 +1048,7 @@ export async function generateLawAwareMonthlyDocket(
       const rawJson = await webLLMService.requestRawJsonCompletion(
         systemPrompt,
         promptToSend,
-        attempt === 1 ? 0.88 : 0.55,
+        attempt === 1 ? 0.88 : 0.35,
         1650,
         attempt === 1
           ? { top_p: 0.92, frequency_penalty: 0.15 }
@@ -1703,6 +1721,29 @@ export function buildDeterministicBroadsheet(
     ? `“Honestly, once '${newestLaw.policy_name}' took effect, my neighbor started registering his porch swing as a municipal transit shelter just to beat the paperwork,” laughed Harbor District baker Mara Vance.`
     : `“We just want the potholes filled and the clinics open before winter,” remarked Northside machinist Devon Ortiz outside City Hall.`;
 
+  const weatherForecast =
+    grid.globalAverages.pollution > 65
+      ? "FORECAST: Haze-yellow smog with a 90% chance of angry letters to the editor."
+      : highestTensionVal >= 75
+      ? "FORECAST: Muggy civic humidity; spontaneous megaphones expected near City Hall."
+      : "FORECAST: Unseasonably crisp press weather with mild afternoon subcommittee gusts.";
+
+  const leakRiskDirector = Object.values(state.departmentHeads).find(
+    (d) => d && d.loyalty < 40
+  );
+  const firstDocket = state.monthlyDocket[0];
+  const cityHallGossip: string[] = [
+    leakRiskDirector
+      ? `Corridor whisper: ${leakRiskDirector.name} was spotted having a suspiciously long espresso with a Metro Chronicle columnist.`
+      : `Corridor whisper: Senior clerks started a betting pool on how many minutes the upcoming council vote will overrun dinner.`,
+    firstDocket
+      ? `Lobbyist watch: Trade groups spent all morning rehearsing dramatic sighs ahead of the "${firstDocket.title}" vote.`
+      : `Lobbyist watch: Three competing neighborhood coalitions accidentally booked the same City Hall committee room.`,
+    newestLaw
+      ? `Watercooler buzz: Bureaucrats still cannot agree which rubber stamp applies to "${newestLaw.policy_name}."`
+      : `Watercooler buzz: The Mayor's press office quietly ordered two extra crates of ceremonial fountain pens.`,
+  ];
+
   return {
     turn: time.turn,
     month: time.month,
@@ -1713,6 +1754,8 @@ export function buildDeterministicBroadsheet(
     falloutParagraphs,
     crisesParagraphs,
     residentQuote,
+    weatherForecast,
+    cityHallGossip,
     winnersBox: {
       group: demoLabels[topDemo.demographic] ?? topDemo.demographic,
       summary: `Currently the administration's warmest bloc at ${topDemo.approval.toFixed(1)}% approval.`,
@@ -1759,16 +1802,19 @@ export async function generateMonthlyBroadsheet(
     return fallback;
   }
 
+  const lastMonthTurn = Math.max(1, state.time.turn - 1);
   const recentLaws = state.enactedPolicies
-    .filter((p) => p.enactedTurn >= Math.max(1, state.time.turn - 1))
-    .slice(0, 4);
+    .filter((p) => p.enactedTurn >= lastMonthTurn)
+    .slice(0, 6);
   const lawsPrompt =
     recentLaws.length > 0
       ? recentLaws
-          .map(
-            (l) =>
-              `- "${l.policy_name}" (Prompt: "${l.originalPromptText ?? l.vibe_feed_headline}"; Budget: ${l.budget_impact.monthly_change >= 0 ? "+" : ""}$${l.budget_impact.monthly_change}/mo)`
-          )
+          .map((l) => {
+            const isEO = (l.sourceLabel ?? "").toLowerCase().includes("executive order");
+            return `- [${isEO ? "UNILATERAL EXECUTIVE ORDER BYPASS" : "Enacted Law"} | Month ${l.enactedTurn}] "${l.policy_name}" (Text: "${
+              l.originalPromptText ?? l.vibe_feed_headline
+            }"; Fallout: ${l.unintended_consequence_trigger || "None"})`;
+          })
           .join("\n")
       : "- No new statutory decrees enacted last month; governing via existing doctrines.";
 
@@ -1780,7 +1826,7 @@ export async function generateMonthlyBroadsheet(
       .join("\n") || "- Four municipal dilemmas awaiting council vote.";
 
   const systemPrompt = `You are the satirical, razor-sharp editorial desk of "THE MUNICIPAL DISPATCH", a NationStates-meets-Fabledom city newspaper.
-Write the Month ${time.turn} front-page broadsheet reacting DIRECTLY to the exact policies and doctrines active in ${grid.startingArchetype} AND introducing this month's 4 docket crises.
+Write the Month ${time.turn} front-page broadsheet for ${grid.startingArchetype}, reacting DIRECTLY to the exact policies/Executive Orders passed last month AND sharply satirizing this month's 4 docket crises.
 
 ACTIVE GOVERNING DOCTRINES:
 - Fiscal: ${state.doctrines.fiscal} | Justice: ${state.doctrines.justice} | Urban: ${state.doctrines.urban}
@@ -1789,30 +1835,38 @@ CITY MOOD CONTEXT (FOR TONE ONLY — DO NOT QUOTE RAW NUMBERS IN PROSE):
 - Overall Mood: ${voterSentiment.overallApproval >= 55 ? "Buoyant" : voterSentiment.overallApproval < 35 ? "Mutinous" : "Restless"} | Treasury: ${treasury.monthlyNet >= 0 ? "Surplus" : "Deficit"}
 - Strain Areas: Crime=${Math.round(cityReport.pillars.crime.currentValue)}, Pollution=${Math.round(cityReport.pillars.pollution.currentValue)}, Housing=${Math.round(cityReport.pillars.land_value.currentValue)}, Traffic=${Math.round(cityReport.pillars.traffic.currentValue)}
 
-LAWS PASSED RECENTLY:
+DECREES & EXECUTIVE ORDERS ENACTED LAST MONTH:
 ${lawsPrompt}
 
-THIS MONTH'S 4 DOCKET CRISES:
+THIS MONTH'S 4 DOCKET CRISES TO ROAST & INVESTIGATE:
 ${docketPrompt}
 
 STRICT WRITING RULES:
 1. NEVER list raw metric numbers or numeric deltas inside the newspaper paragraphs (e.g., do NOT write "Crime stands at 66 (+0)" or "Approval is 52%"—the sidebar already shows numbers).
-2. Write 3-4 hilarious, vivid, character-driven paragraphs focusing on bizarre unintended consequences, bureaucratic absurdity, eccentric local business schemes, and deadpan reactions to the exact policies and doctrines active in the city.
+2. "fallout_paragraphs" (3-4 paragraphs) MUST directly name and satirize the decrees & Unilateral Executive Orders enacted last month with bizarre loopholes, bureaucratic comedy, and deadpan reactions.
+3. "crises_paragraphs" (2-3 paragraphs) MUST specifically name and lampoon this month's 4 active docket dilemmas, mocking the lobbyists, unions, neighborhood busybodies, and city officials fighting over them.
 
 Return STRICTLY a valid raw JSON object matching this exact schema:
 {
   "lead_headline": "string (punchy satirical newspaper headline, max 95 chars)",
   "subhead": "string (1 crisp deck sentence, max 160 chars)",
+  "weather_forecast": "string (1 satirical 1-sentence civic weather/mood forecast for the masthead ribbon)",
   "fallout_paragraphs": [
-    "string (Paragraph 1: vivid street-level consequences of last month's specific laws/doctrines—NO raw stats)",
+    "string (Paragraph 1: street-level consequences of last month's specific laws/Executive Orders—NO raw stats)",
     "string (Paragraph 2: absurd loophole exploited by eccentric citizens or local businesses)",
     "string (Paragraph 3: bureaucratic comedy, unexpected cultural fad, or neighborhood winners vs. losers)",
     "string (Paragraph 4: colorful closing vignette from the avenues)"
   ],
   "resident_quote": "string (1 deadpan fictional resident quote with name & neighborhood reacting to active laws)",
   "crises_paragraphs": [
-    "string (Paragraph 1: investigative reporting introducing the 4 new dilemmas on this month's docket)",
-    "string (Paragraph 2: why citizens, unions, and businesses are demanding immediate action before tensions boil over)"
+    "string (Paragraph 1: satirical investigative reporting naming and poking fun at the first 2 docket dilemmas on this month's docket)",
+    "string (Paragraph 2: comic clash between lobbyists, unions, and residents over the remaining 2 docket dilemmas)",
+    "string (Paragraph 3: why City Hall's upcoming vote threatens to turn council chambers into political theater)"
+  ],
+  "city_hall_gossip": [
+    "string (1 punchy 1-sentence City Hall rumor)",
+    "string (1 punchy 1-sentence lobbyist/opposition rumor)",
+    "string (1 punchy 1-sentence neighborhood oddity)"
   ],
   "winners_group": "string (who benefited most)",
   "winners_summary": "string (1 short sentence why they won)",
@@ -1823,75 +1877,96 @@ Return STRICTLY a valid raw JSON object matching this exact schema:
   "on_the_horizon_warning": "string (1 bold Comptroller/Analyst warning foreshadowing looming risks)"
 }
 
-CRITICAL: Respond ONLY with valid raw JSON. Never output the literal word "string".`;
+CRITICAL: Respond ONLY with valid raw JSON. Start with { and end with }. Never output the literal word "string".`;
 
-  try {
-    const rawJson = await webLLMService.requestRawJsonCompletion(
-      systemPrompt,
-      "Publish this month's multi-paragraph front-page broadsheet JSON now.",
-      0.82,
-      1200
-    );
-    const extracted = sanitizeAndExtractJsonObject(rawJson);
-    const parsed = JSON.parse(extracted) as Record<string, unknown>;
+  let lastRaw = "";
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    try {
+      const prompt =
+        attempt === 1
+          ? "Publish this month's multi-paragraph front-page broadsheet JSON now."
+          : `REPAIR PASS: Fix syntax and return ONLY valid raw JSON starting with {. Broken output start: ${lastRaw.slice(0, 220)}`;
+      const rawJson = await webLLMService.requestRawJsonCompletion(
+        systemPrompt,
+        prompt,
+        attempt === 1 ? 0.84 : 0.35,
+        1450
+      );
+      lastRaw = rawJson;
+      const extracted = sanitizeAndExtractJsonObject(rawJson);
+      const parsed = JSON.parse(extracted) as Record<string, unknown>;
 
-    const str = (key: string, fb: string, maxLen = 420): string => {
-      const v = parsed[key];
-      if (typeof v !== "string") return fb;
-      const t = v.trim();
-      if (!t || t.toLowerCase() === "string") return fb;
-      return t.slice(0, maxLen);
-    };
+      const str = (key: string, fb: string, maxLen = 420): string => {
+        const v = parsed[key];
+        if (typeof v !== "string") return fb;
+        const t = v.trim();
+        if (!t || t.toLowerCase() === "string") return fb;
+        return t.slice(0, maxLen);
+      };
 
-    const strArr = (key: string, fb: string[], minItems = 2): string[] => {
-      const v = parsed[key];
-      if (!Array.isArray(v)) return fb;
-      const cleaned = v
-        .filter((x): x is string => typeof x === "string")
-        .map((x) => x.trim())
-        .filter((x) => x.length > 20 && x.toLowerCase() !== "string")
-        .map((x) => x.slice(0, 520));
-      return cleaned.length >= minItems ? cleaned.slice(0, 4) : fb;
-    };
+      const strArr = (key: string, fb: string[], minItems = 2): string[] => {
+        const v = parsed[key];
+        if (!Array.isArray(v)) return fb;
+        const cleaned = v
+          .filter((x): x is string => typeof x === "string")
+          .map((x) => x.trim())
+          .filter((x) => x.length > 18 && x.toLowerCase() !== "string")
+          .map((x) => x.slice(0, 560));
+        return cleaned.length >= minItems ? cleaned.slice(0, 4) : fb;
+      };
 
-    const falloutParagraphs = strArr(
-      "fallout_paragraphs",
-      fallback.falloutParagraphs,
-      3
-    );
-    const crisesParagraphs = strArr(
-      "crises_paragraphs",
-      fallback.crisesParagraphs,
-      2
-    );
+      const falloutParagraphs = strArr(
+        "fallout_paragraphs",
+        fallback.falloutParagraphs,
+        3
+      );
+      const crisesParagraphs = strArr(
+        "crises_paragraphs",
+        fallback.crisesParagraphs,
+        2
+      );
+      const gossip = strArr(
+        "city_hall_gossip",
+        fallback.cityHallGossip ?? [],
+        1
+      );
 
-    return {
-      ...fallback,
-      leadHeadline: str("lead_headline", fallback.leadHeadline, 110),
-      subhead: str("subhead", fallback.subhead, 200),
-      humanScaleRipple: falloutParagraphs[1] ?? falloutParagraphs[0] ?? fallback.humanScaleRipple,
-      falloutParagraphs,
-      crisesParagraphs,
-      residentQuote: str("resident_quote", fallback.residentQuote ?? "", 260) || fallback.residentQuote,
-      winnersBox: {
-        group: str("winners_group", fallback.winnersBox.group, 60),
-        summary: str("winners_summary", fallback.winnersBox.summary, 160),
-        deltaText: fallback.winnersBox.deltaText,
-      },
-      losersBox: {
-        group: str("losers_group", fallback.losersBox.group, 60),
-        summary: str("losers_summary", fallback.losersBox.summary, 160),
-        deltaText: fallback.losersBox.deltaText,
-      },
-      metroChronicleTake: str("metro_chronicle_take", fallback.metroChronicleTake, 200),
-      streetlightTake: str("streetlight_take", fallback.streetlightTake, 200),
-      onTheHorizonWarning: str("on_the_horizon_warning", fallback.onTheHorizonWarning, 220),
-      isAIGenerated: true,
-    };
-  } catch (err) {
-    console.error("Broadsheet Generation Error:", err);
-    return fallback;
+      return {
+        ...fallback,
+        leadHeadline: str("lead_headline", fallback.leadHeadline, 110),
+        subhead: str("subhead", fallback.subhead, 200),
+        weatherForecast:
+          str("weather_forecast", fallback.weatherForecast ?? "", 160) ||
+          fallback.weatherForecast,
+        humanScaleRipple:
+          falloutParagraphs[1] ?? falloutParagraphs[0] ?? fallback.humanScaleRipple,
+        falloutParagraphs,
+        crisesParagraphs,
+        cityHallGossip:
+          gossip.length > 0 ? gossip.slice(0, 3) : fallback.cityHallGossip,
+        residentQuote:
+          str("resident_quote", fallback.residentQuote ?? "", 260) ||
+          fallback.residentQuote,
+        winnersBox: {
+          group: str("winners_group", fallback.winnersBox.group, 60),
+          summary: str("winners_summary", fallback.winnersBox.summary, 160),
+          deltaText: fallback.winnersBox.deltaText,
+        },
+        losersBox: {
+          group: str("losers_group", fallback.losersBox.group, 60),
+          summary: str("losers_summary", fallback.losersBox.summary, 160),
+          deltaText: fallback.losersBox.deltaText,
+        },
+        metroChronicleTake: str("metro_chronicle_take", fallback.metroChronicleTake, 200),
+        streetlightTake: str("streetlight_take", fallback.streetlightTake, 200),
+        onTheHorizonWarning: str("on_the_horizon_warning", fallback.onTheHorizonWarning, 220),
+        isAIGenerated: true,
+      };
+    } catch (err) {
+      console.error(`Broadsheet Generation Error (Attempt ${attempt}/2):`, err);
+    }
   }
+  return fallback;
 }
 
 // ----------------------------------------------------------------------------
@@ -2297,66 +2372,74 @@ Return STRICTLY valid raw JSON:
   ]
 }`;
 
-  try {
-    const rawJson = await webLLMService.requestRawJsonCompletion(
-      systemPrompt,
-      "Draft the Sponsored Bill JSON now.",
-      0.7,
-      1100
-    );
-    const extracted = sanitizeAndExtractJsonObject(rawJson);
-    const parsed = JSON.parse(extracted) as Record<string, unknown>;
-    const pillar =
-      normalizeCivicPillar(parsed.target_pillar) ?? fallback.targetPillar;
-    const formalTitle =
-      typeof parsed.formal_title === "string" && parsed.formal_title.trim()
-        ? parsed.formal_title.trim().slice(0, 55)
-        : fallback.formalTitle;
-    const briefing =
-      typeof parsed.briefing === "string" && parsed.briefing.trim()
-        ? parsed.briefing.trim().slice(0, 260)
-        : fallback.briefing;
+  let lastRaw = "";
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    try {
+      const prompt =
+        attempt === 1
+          ? "Draft the Sponsored Bill JSON now."
+          : `REPAIR PASS: Fix syntax and return ONLY valid raw JSON starting with {. Broken output start: ${lastRaw.slice(0, 220)}`;
+      const rawJson = await webLLMService.requestRawJsonCompletion(
+        systemPrompt,
+        prompt,
+        attempt === 1 ? 0.55 : 0.25,
+        1100
+      );
+      lastRaw = rawJson;
+      const extracted = sanitizeAndExtractJsonObject(rawJson);
+      const parsed = JSON.parse(extracted) as Record<string, unknown>;
+      const pillar =
+        normalizeCivicPillar(parsed.target_pillar) ?? fallback.targetPillar;
+      const formalTitle =
+        typeof parsed.formal_title === "string" && parsed.formal_title.trim()
+          ? parsed.formal_title.trim().slice(0, 55)
+          : fallback.formalTitle;
+      const briefing =
+        typeof parsed.briefing === "string" && parsed.briefing.trim()
+          ? parsed.briefing.trim().slice(0, 260)
+          : fallback.briefing;
 
-    const rawPresets = Array.isArray(parsed.presets) ? parsed.presets : [];
-    const costs: [number, number, number] = [10, 0, 0];
-    const presets = ([0, 1, 2] as const).map((idx) => {
-      const pr =
-        rawPresets[idx] && typeof rawPresets[idx] === "object"
-          ? (rawPresets[idx] as Record<string, unknown>)
-          : null;
-      if (!pr) return fallback.presets[idx];
+      const rawPresets = Array.isArray(parsed.presets) ? parsed.presets : [];
+      const costs: [number, number, number] = [10, 0, 0];
+      const presets = ([0, 1, 2] as const).map((idx) => {
+        const pr =
+          rawPresets[idx] && typeof rawPresets[idx] === "object"
+            ? (rawPresets[idx] as Record<string, unknown>)
+            : null;
+        if (!pr) return fallback.presets[idx];
+        return {
+          id: `${fallback.id}-opt-${idx + 1}`,
+          stanceLabel:
+            typeof pr.stance_label === "string" && pr.stance_label.trim()
+              ? pr.stance_label.trim().slice(0, 32)
+              : fallback.presets[idx].stanceLabel,
+          optionTitle:
+            typeof pr.option_title === "string" && pr.option_title.trim()
+              ? pr.option_title.trim().slice(0, 55)
+              : fallback.presets[idx].optionTitle,
+          description:
+            typeof pr.description === "string" && pr.description.trim()
+              ? pr.description.trim().slice(0, 160)
+              : fallback.presets[idx].description,
+          capitalCost: costs[idx],
+          policyEffect: pr.policy_effect
+            ? parseAndClampAIPolicyResponse(JSON.stringify(pr.policy_effect))
+            : fallback.presets[idx].policyEffect,
+        };
+      }) as [DocketPresetOption, DocketPresetOption, DocketPresetOption];
+
       return {
-        id: `${fallback.id}-opt-${idx + 1}`,
-        stanceLabel:
-          typeof pr.stance_label === "string" && pr.stance_label.trim()
-            ? pr.stance_label.trim().slice(0, 32)
-            : fallback.presets[idx].stanceLabel,
-        optionTitle:
-          typeof pr.option_title === "string" && pr.option_title.trim()
-            ? pr.option_title.trim().slice(0, 55)
-            : fallback.presets[idx].optionTitle,
-        description:
-          typeof pr.description === "string" && pr.description.trim()
-            ? pr.description.trim().slice(0, 160)
-            : fallback.presets[idx].description,
-        capitalCost: costs[idx],
-        policyEffect: pr.policy_effect
-          ? parseAndClampAIPolicyResponse(JSON.stringify(pr.policy_effect))
-          : fallback.presets[idx].policyEffect,
+        ...fallback,
+        formalTitle,
+        targetPillar: pillar,
+        briefing,
+        presets,
       };
-    }) as [DocketPresetOption, DocketPresetOption, DocketPresetOption];
-
-    return {
-      ...fallback,
-      formalTitle,
-      targetPillar: pillar,
-      briefing,
-      presets,
-    };
-  } catch (err) {
-    console.error("Sponsored Bill Draft Error:", err);
-    return fallback;
+    } catch (err) {
+      console.error(`Sponsored Bill Draft Error (Attempt ${attempt}/2):`, err);
+    }
   }
+  return fallback;
 }
 
 export async function evaluateSponsoredBillsDebate(

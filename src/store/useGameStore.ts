@@ -80,9 +80,11 @@ import {
 import {
   buildDeterministicBroadsheet,
   evaluateSponsoredBillsDebate,
-  generateBatchedTurnContent,
   generateHistoricalPostMortem,
+  generateLawAwareMonthlyDocket,
+  generateMonthlyBroadsheet,
   recordCrossGameIssueTitles,
+  webLLMService,
 } from "../services/webllmService";
 import { soundEffects } from "../services/soundEffects";
 
@@ -1295,6 +1297,7 @@ const buildProceduralCityState = (
     showCityReportModal: false,
     showDocketModal: false,
     showCabinetModal: false,
+    showDoctrinesModal: false,
     showSaveLoadModal: false,
     centerDeskTab: "dispatch" as const,
     activeDocketPillar: defaultHeatmapLayer as CivicPillar,
@@ -2569,6 +2572,10 @@ export const useGameStore = create<GameState>((set, get) => ({
     set({ showCabinetModal: visible });
   },
 
+  setShowDoctrinesModal: (visible: boolean) => {
+    set({ showDoctrinesModal: visible });
+  },
+
   setCenterDeskTab: (tab: "dispatch" | "docket", focusPillar?: CivicPillar) => {
     set((state) => ({
       centerDeskTab: tab,
@@ -2975,14 +2982,14 @@ export const useGameStore = create<GameState>((set, get) => ({
     const sleepStep = (ms: number) =>
       new Promise<void>((resolve) => setTimeout(resolve, ms));
 
-    // Step 1 (25%): Calculating Fiscal & District Spillover...
+    // Step 1 (20%): Calculating Fiscal & 6-Pillar Spillover...
     set({
       turnTransitionProgress: {
         isOpen: true,
-        pct: 25,
-        stepLabel: "Calculating Fiscal & District Spillover...",
+        pct: 20,
+        stepLabel: "Calculating Fiscal & 6-Pillar Spillover...",
         subLabel:
-          "Aggregating 100-block neighborhood metrics, revenues, and active law drift",
+          "Aggregating 100-block neighborhood metrics, Education & Health, and treasury ledger",
       },
       pressWireFlash: null,
     });
@@ -3647,11 +3654,11 @@ export const useGameStore = create<GameState>((set, get) => ({
     }
 
     try {
-      // Step 2 (55%): Evaluating Public Debate on Sponsored Bills & Active Laws...
+      // Stage 2 (40%): Evaluating Public Debate on Sponsored Bills & Active Laws...
       set({
         turnTransitionProgress: {
           isOpen: true,
-          pct: 55,
+          pct: 40,
           stepLabel:
             "Evaluating Public Debate on Sponsored Bills & Active Laws...",
           subLabel:
@@ -3665,41 +3672,26 @@ export const useGameStore = create<GameState>((set, get) => ({
         postTurnState
       );
       if (evaluatedBills.length === 0) {
-        await sleepStep(120);
-      }
-
-      // Step 3 (80%): Writing The Municipal Dispatch & Drafting Law-Aware Docket (Batched)...
-      set({
-        turnTransitionProgress: {
-          isOpen: true,
-          pct: 80,
-          stepLabel: "Writing The Municipal Dispatch Front-Page Fallout...",
-          subLabel:
-            "Synthesizing broadsheet satire, rival op-eds & law-aware docket in one batched pass",
-        },
-      });
-      const latestState = get();
-      const {
-        broadsheet: broadsheetWithHearings,
-        docketIssues: aiDocketIssues,
-        usedDocketFallback,
-      } = await generateBatchedTurnContent(latestState, hearings);
-
-      // Step 4 (100%): Finalizing Next Month's Law-Aware Legislative Docket...
-      set({
-        turnTransitionProgress: {
-          isOpen: true,
-          pct: 100,
-          stepLabel: "Drafting Next Month's Law-Aware Legislative Docket...",
-          subLabel:
-            "Promoting sponsored bills & locking in 4 cross-pillar dilemmas",
-        },
-      });
-      if (!broadsheetWithHearings.isAIGenerated) {
         await sleepStep(100);
       }
 
-      // Merge AI docket issues with fallback, and promote evaluated Sponsored Bills to the top!
+      // Stage 3 (65%): Drafting Next Month's 4 Law-Aware Legislative Docket Issues...
+      set({
+        turnTransitionProgress: {
+          isOpen: true,
+          pct: 65,
+          stepLabel:
+            "Drafting Next Month's 4 Law-Aware Legislative Docket Issues...",
+          subLabel:
+            "Rolling 3-wheel combinatorial civic seeds & weaving law-interlocking conflicts",
+        },
+      });
+      const latestState = get();
+      const aiDocketIssues = await generateLawAwareMonthlyDocket(latestState);
+      const usedDocketFallback =
+        webLLMService.isEngineReady() && aiDocketIssues.length === 0;
+
+      // Merge AI docket issues with fallback, and promote evaluated Sponsored Bills to the top
       const mergedBaseDocket =
         aiDocketIssues.length >= 3
           ? aiDocketIssues
@@ -3728,6 +3720,32 @@ export const useGameStore = create<GameState>((set, get) => ({
       const finalDocket = [...promotedSponsoredIssues, ...mergedBaseDocket];
       recordCrossGameIssueTitles(finalDocket.map((i) => i.title));
 
+      // Stage 4 (85%): Writing The Municipal Dispatch Front-Page Satire...
+      set({
+        turnTransitionProgress: {
+          isOpen: true,
+          pct: 85,
+          stepLabel: "Writing The Municipal Dispatch Front-Page Satire...",
+          subLabel:
+            "Roasting last month's decrees & investigating this month's 4 docket dilemmas",
+        },
+      });
+      const generatedBroadsheet = await generateMonthlyBroadsheet({
+        ...latestState,
+        monthlyDocket: finalDocket,
+      });
+      const broadsheetWithHearings = {
+        ...generatedBroadsheet,
+        publicHearingsDebate:
+          hearings.length > 0
+            ? hearings
+            : generatedBroadsheet.publicHearingsDebate,
+      };
+      if (!broadsheetWithHearings.isAIGenerated) {
+        await sleepStep(100);
+      }
+
+      // Stage 5 (100%): Publishing Issue & Opening Council Desk
       set((s) => ({
         frontPageBroadsheet: broadsheetWithHearings,
         isGeneratingBroadsheet: false,
@@ -3737,7 +3755,9 @@ export const useGameStore = create<GameState>((set, get) => ({
           new Set([...s.pastIssueTitles, ...finalDocket.map((i) => i.title)])
         ),
         activeDocketPillar:
-          promotedSponsoredIssues[0]?.pillar ?? s.activeDocketPillar,
+          promotedSponsoredIssues[0]?.pillar ??
+          finalDocket[0]?.pillar ??
+          s.activeDocketPillar,
         centerDeskTab: "dispatch",
         docketFallbackNotice: usedDocketFallback
           ? "WebLLM returned malformed JSON twice; fallback docket issues were loaded for this month."

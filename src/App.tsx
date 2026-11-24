@@ -44,6 +44,11 @@ const CabinetChamberModal = lazy(() =>
     default: m.CabinetChamberModal,
   }))
 );
+const DoctrinesModal = lazy(() =>
+  import("./components/DoctrinesModal").then((m) => ({
+    default: m.DoctrinesModal,
+  }))
+);
 const LegacyChronicleModal = lazy(() =>
   import("./components/LegacyChronicleModal").then((m) => ({
     default: m.LegacyChronicleModal,
@@ -128,6 +133,7 @@ export const App: React.FC<GovernorHudShellProps> = ({ mapViewport }) => {
             <SaveLoadModal />
             <TownHallModal />
             <CabinetChamberModal />
+            <DoctrinesModal />
             <LegacyChronicleModal />
           </Suspense>
         </>

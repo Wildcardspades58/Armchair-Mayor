@@ -238,6 +238,8 @@ export interface FrontPageBroadsheet {
   metroChronicleTake: string;
   streetlightTake: string;
   onTheHorizonWarning: string;
+  weatherForecast?: string;
+  cityHallGossip?: string[];
   publicHearingsDebate?: PublicHearingDebateEntry[];
   isAIGenerated: boolean;
 }
@@ -719,6 +721,7 @@ export interface GameState {
   showCityReportModal: boolean;
   showDocketModal: boolean;
   showCabinetModal: boolean;
+  showDoctrinesModal: boolean;
   showSaveLoadModal: boolean;
   centerDeskTab: "dispatch" | "docket";
   activeDocketPillar: CivicPillar;
@@ -776,6 +779,7 @@ export interface GameState {
   setShowCityReportModal: (visible: boolean) => void;
   setShowDocketModal: (visible: boolean, focusPillar?: CivicPillar) => void;
   setShowCabinetModal: (visible: boolean) => void;
+  setShowDoctrinesModal: (visible: boolean) => void;
   setCenterDeskTab: (tab: "dispatch" | "docket", focusPillar?: CivicPillar) => void;
   setShowSaveLoadModal: (visible: boolean) => void;
   saveGameToSlot: (slotKey: string) => boolean;

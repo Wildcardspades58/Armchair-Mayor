@@ -60,6 +60,8 @@ export const TopScoreboard: React.FC = () => {
   const startingArchetype = useGameStore((s) => s.grid.startingArchetype);
   const initializeCity = useGameStore((s) => s.initializeCity);
   const setShowSaveLoadModal = useGameStore((s) => s.setShowSaveLoadModal);
+  const setShowDoctrinesModal = useGameStore((s) => s.setShowDoctrinesModal);
+  const setShowCabinetModal = useGameStore((s) => s.setShowCabinetModal);
   const retireAndReviewLegacy = useGameStore((s) => s.retireAndReviewLegacy);
   const [isMuted, setIsMuted] = useState(() => soundEffects.isMuted());
 
@@ -211,8 +213,30 @@ export const TopScoreboard: React.FC = () => {
           </div>
         </div>
 
-        {/* 4. System Controls: SAVE/LOAD, LEGACY, SFX, NEW GAME */}
+        {/* 4. System Controls: DOCTRINES, CABINET, SAVE/LOAD, LEGACY, SFX, NEW GAME */}
         <div className="gov-score-actions">
+          <button
+            type="button"
+            className="gov-btn-ghost"
+            onClick={() => {
+              soundEffects.playUiClick();
+              setShowDoctrinesModal(true);
+            }}
+            title="Open Governing Doctrines Chamber"
+          >
+            ⚖️ DOCTRINES
+          </button>
+          <button
+            type="button"
+            className="gov-btn-ghost"
+            onClick={() => {
+              soundEffects.playUiClick();
+              setShowCabinetModal(true);
+            }}
+            title="Open 5-Director Cabinet Chamber"
+          >
+            👥 CABINET (5)
+          </button>
           <button
             type="button"
             className="gov-btn-ghost gov-text-emerald"
